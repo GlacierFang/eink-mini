@@ -103,6 +103,7 @@ jobs:
           path: |
             firmware/.pio/build/esp32-c3-pro-mini/bootloader.bin
             firmware/.pio/build/esp32-c3-pro-mini/partitions.bin
+            firmware/.pio/build/esp32-c3-pro-mini/boot_app0.bin
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
             firmware/.pio/build/esp32-c3-pro-mini/flash_args.txt
@@ -158,7 +159,7 @@ jobs:
           TMPIDX=$(mktemp)
           export GIT_INDEX_FILE=$TMPIDX
           if [ -n "$BASE" ]; then git read-tree "$BASE^{tree}"; else git read-tree --empty; fi
-          for f in bootloader.bin partitions.bin firmware.bin eink-mini-merged.bin flash_args.txt; do
+          for f in bootloader.bin partitions.bin boot_app0.bin firmware.bin eink-mini-merged.bin flash_args.txt; do
             BLOB=$(git hash-object -w "$B/$f")
             git update-index --add --cacheinfo 100644,$BLOB,"$f"
           done
