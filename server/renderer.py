@@ -96,3 +96,21 @@ def draw_header(draw, title, subtitle=""):
 def draw_footer(draw, text):
     draw.line([(0, H - 15), (W, H - 15)], fill=0, width=1)
     draw.text((8, H - 13), text, font=load_font(11), fill=0)
+
+
+def clip_text(draw, text, font, max_width):
+    """按像素宽度裁掉超出部分。
+
+    屏上放不下就截断 —— 宁可少一个字，也不要叠到隔壁列上去。
+    """
+    text = text or ""
+    if not text or max_width <= 0:
+        return ""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    out = ""
+    for ch in text:
+        if draw.textlength(out + ch, font=font) > max_width:
+            break
+        out += ch
+    return out

@@ -4,125 +4,178 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>eink-mini 控制台</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
-         margin: 0; padding: 24px; max-width: 960px; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { opacity: .65; font-size: 13px; margin-bottom: 18px; }
-  h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; }
-  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
-  .grid .card { margin-bottom: 0; }
-  img { width: 100%; image-rendering: pixelated; background: #fff; border: 1px solid rgba(128,128,128,.3); }
-  .row { display: flex; gap: 8px; margin-top: 12px; }
-  input { font: inherit; padding: 8px; border: 1px solid rgba(128,128,128,.4);
-          border-radius: 6px; background: transparent; color: inherit; width: 100%; }
-  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 0;
-           background: #333; color: #fff; cursor: pointer; white-space: nowrap; }
-  .msg { margin-top: 8px; font-size: 13px; opacity: .8; min-height: 18px; }
-  .ok { color: #2e9e4f; } .bad { color: #c0392b; }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
-           border: 1px solid currentColor; vertical-align: 2px; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; margin: 0; font-size: 13px; }
-  dt { opacity: .6; }
-  dd { margin: 0; font-variant-numeric: tabular-nums; }
-  code { background: rgba(128,128,128,.15); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-  .native { font-size: 13px; opacity: .75; padding: 26px 0; text-align: center; }
-</style>
+<link rel="stylesheet" href="static/console.css">
 </head>
 <body>
-<h1>eink-mini 控制台</h1>
-<div class="sub">2.9 寸黑白墨水屏 · 296x128 · 1bpp（1=黑，MSB first，4736 字节/帧）</div>
 
-<div class="card">
-  <h2>设备状态</h2>
-  <p style="margin:0 0 10px">
-    {% if device_online %}
-      <span class="badge ok">在线</span>
-    {% else %}
-      <span class="badge bad">离线</span>
-    {% endif %}
-  </p>
-  <dl>
-    <dt>最后活动</dt><dd>{{ device.last_seen or '设备还没拉取过' }}</dd>
-    <dt>最后请求</dt><dd>{{ device.last_endpoint or '-' }}</dd>
-    <dt>来源 IP</dt><dd>{{ device.ip or '-' }}</dd>
-    <dt>客户端</dt><dd>{{ device.user_agent or '-' }}</dd>
-    <dt>拉取次数</dt><dd>清单 {{ device.manifest_fetched or 0 }} 次 · 位图 {{ device.pages_fetched or 0 }} 次</dd>
-  </dl>
-</div>
+<header class="banner">
+  <strong>eink-mini</strong>
+  <span class="banner-sub">2.9 寸黑白墨水屏 · 296x128 · 1bpp · 4736 字节/帧</span>
+  <span class="badge {{ 'ok' if device_online else 'dim' }}" id="badge-device">
+    {{ '设备在线' if device_online else '设备离线' }}
+  </span>
+</header>
 
-<div class="grid">
-  {% for p in pages %}
-  <div class="card">
-    <h2>{{ p.title }} <span style="opacity:.5">({{ p.type }})</span></h2>
-    {% if p.type == 'native' %}
-      <div class="native">设备本地渲染（翻页钟），不消耗服务端</div>
-    {% else %}
-      <img src="preview/{{ p.id }}.png" alt="{{ p.id }} preview">
-    {% endif %}
-  </div>
-  {% endfor %}
-</div>
+<main>
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab active" data-tab="device">设备</button>
+    {% for f in features %}
+    <button type="button" class="tab" data-tab="{{ f.id }}">{{ f.title }}</button>
+    {% endfor %}
+  </nav>
 
-<div class="card" style="margin-top:16px">
-  <h2>功能配置</h2>
+  <div class="panel">
 
-  <h2 style="text-transform:none;letter-spacing:0;margin:0 0 4px">天气 · 城市</h2>
-  <div style="font-size:13px;opacity:.7;margin-bottom:8px">
-    当前：{{ config.city }}（{{ '%.4f' % config.lat }}, {{ '%.4f' % config.lon }}）
-  </div>
-  <div class="row">
-    <input id="city" type="text" placeholder="城市名，如 杭州 / 札幌" value="{{ config.city }}">
-    <button data-act="city">保存</button>
-  </div>
-  <div class="msg" id="city-msg"></div>
+    <!-- 设备 -->
+    <section class="tab-page" data-page="device">
+      <div class="card">
+        <h2>设备状态</h2>
+        <div class="kv">
+          <div class="kv-row"><span class="k">连接</span><span class="v">
+            {% if device_online %}<span class="badge ok">在线</span>
+            {% else %}<span class="badge dim">离线</span>{% endif %}
+          </span></div>
+          <div class="kv-row"><span class="k">最后活动</span><span class="v">{{ device.last_seen or '设备还没拉取过' }}</span></div>
+          <div class="kv-row"><span class="k">最后请求</span><span class="v">{{ device.last_endpoint or '-' }}</span></div>
+          <div class="kv-row"><span class="k">来源 IP</span><span class="v">{{ device.ip or '-' }}</span></div>
+          <div class="kv-row"><span class="k">客户端</span><span class="v">{{ device.user_agent or '-' }}</span></div>
+          <div class="kv-row"><span class="k">拉取次数</span><span class="v">清单 {{ device.manifest_fetched or 0 }} 次 · 位图 {{ device.pages_fetched or 0 }} 次</span></div>
+        </div>
+        <p class="note">设备每 30 秒拉一次清单和位图。3 分钟内没有拉取算离线。</p>
+      </div>
 
-  <h2 style="text-transform:none;letter-spacing:0;margin:18px 0 4px">时钟 · 屏幕标题</h2>
-  <div style="font-size:13px;opacity:.7;margin-bottom:8px">
-    显示在设备时钟页右上角。设备屏没有中文字库，只能用 ASCII。
-  </div>
-  <div class="row">
-    <input id="title" type="text" placeholder="ASCII, ≤16 字符" value="{{ config.device_title }}">
-    <button data-act="title">保存</button>
-  </div>
-  <div class="msg" id="title-msg"></div>
-</div>
+      <div class="card">
+        <h2>设备连接信息</h2>
+        <div class="kv">
+          <div class="kv-row"><span class="k">服务端</span><span class="v"><code>{{ request.host_url }}eink-mini/</code></span></div>
+          <div class="kv-row"><span class="k">设备端 host</span><span class="v"><code>ruohan.site</code></span></div>
+          <div class="kv-row"><span class="k">设备端 base</span><span class="v"><code>/eink-mini</code></span></div>
+          <div class="kv-row"><span class="k">设备端 port</span><span class="v"><code>80</code></span></div>
+          <div class="kv-row"><span class="k">清单地址</span><span class="v"><code>{{ request.host_url }}eink-mini/api/manifest.json</code></span></div>
+        </div>
+      </div>
+    </section>
 
-<div class="card">
-  <h2>设备连接信息</h2>
-  <div style="font-size:13px;line-height:1.9">
-    服务端地址：<code>{{ request.host_url }}eink-mini/</code><br>
-    设备端配置：<code>host = ruohan.site</code> · <code>base = /eink-mini</code> · <code>port = 80</code><br>
-    清单：<code>{{ request.host_url }}eink-mini/api/manifest.json</code>
+    <!-- 每个功能一区 -->
+    {% for f in features %}
+    <section class="tab-page hidden" data-page="{{ f.id }}">
+      <div class="grid2">
+
+        <div class="card">
+          <h2>{{ f.title }} <span class="muted">{{ f.label }}</span></h2>
+          <p class="note">{{ f.desc }}</p>
+          {% if f.type == 'native' %}
+          <div class="preview-wrap">
+            <div class="preview-empty-static">设备本地渲染<br>这里看不到画面</div>
+          </div>
+          {% else %}
+          <div class="preview-wrap">
+            <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview">
+          </div>
+          {% endif %}
+        </div>
+
+        <div class="card">
+          <h2>配置</h2>
+          {% if f.fields %}
+            {% for fld in f.fields %}
+            <div class="field">
+              <label for="cfg-{{ fld.key }}">{{ fld.label }}</label>
+              <div class="row">
+                <input type="text" id="cfg-{{ fld.key }}" value="{{ fld.value }}" placeholder="{{ fld.label }}">
+                <button type="button" data-save="{{ fld.key }}">保存</button>
+              </div>
+              <p class="note">{{ fld.hint }}</p>
+              <div class="msg" id="msg-{{ fld.key }}"></div>
+            </div>
+            {% endfor %}
+          {% else %}
+            <p class="note">这个功能没有可配置项。</p>
+          {% endif %}
+
+          {% if f.id == 'weather' %}
+          <div class="field">
+            <h3 style="margin:18px 0 8px;font-size:13px">当前取数</h3>
+            {% if weather %}
+            <div class="kv">
+              <div class="kv-row"><span class="k">城市</span><span class="v">{{ weather.city }}</span></div>
+              <div class="kv-row"><span class="k">温度</span><span class="v">{{ weather.temp }}°C</span></div>
+              <div class="kv-row"><span class="k">湿度</span><span class="v">{{ weather.humidity }}%</span></div>
+              <div class="kv-row"><span class="k">取数时间</span><span class="v">{{ weather_at or "还没取到" }}</span></div>
+            </div>
+            {% else %}
+            <p class="note">还没有取到天气数据。后台线程在取，可能上游暂时不通。</p>
+            {% endif %}
+          </div>
+          {% endif %}
+        </div>
+
+      </div>
+    </section>
+    {% endfor %}
+
   </div>
-</div>
+</main>
 
 <script>
-function save(act) {
-  const msg = document.getElementById(act + '-msg');
-  const field = act === 'city' ? 'city' : 'device_title';
-  const val = document.getElementById(field === 'city' ? 'city' : 'title').value.trim();
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(function (t) {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.querySelectorAll('.tab-page').forEach(function (p) {
+    p.classList.toggle('hidden', p.dataset.page !== name);
+  });
+  try { localStorage.setItem('eink_tab', name); } catch (e) {}
+}
+
+document.getElementById('tabs').addEventListener('click', function (e) {
+  var t = e.target.closest('.tab');
+  if (t) switchTab(t.dataset.tab);
+});
+
+function saveConfig(key) {
+  var input = document.getElementById('cfg-' + key);
+  var msg = document.getElementById('msg-' + key);
   msg.textContent = '保存中…';
+  msg.className = 'msg';
   fetch('api/config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({[field]: val})
-  }).then(r => r.json().then(j => ({ok: r.ok, j}))).then(({ok, j}) => {
-    msg.className = 'msg ' + (ok ? 'ok' : 'bad');
-    msg.textContent = ok ? '已保存' : ('失败：' + (j.error || ''));
-    if (ok) setTimeout(() => location.reload(), 500);
-  }).catch(e => {
+    body: JSON.stringify((function () { var o = {}; o[key] = input.value; return o; })())
+  }).then(function (r) {
+    return r.json().then(function (j) { return {ok: r.ok, j: j}; });
+  }).then(function (res) {
+    if (res.ok) {
+      msg.className = 'msg ok';
+      msg.textContent = '已保存';
+      setTimeout(function () { location.reload(); }, 600);
+    } else {
+      msg.className = 'msg bad';
+      msg.textContent = '失败：' + (res.j.error || '');
+    }
+  }).catch(function (e) {
     msg.className = 'msg bad';
     msg.textContent = '失败：' + e;
   });
 }
-document.querySelectorAll('button[data-act]').forEach(b => {
-  b.addEventListener('click', () => save(b.dataset.act));
+
+document.querySelectorAll('button[data-save]').forEach(function (b) {
+  b.addEventListener('click', function () { saveConfig(b.dataset.save); });
 });
-document.getElementById('city').addEventListener('keydown', e => { if (e.key === 'Enter') save('city'); });
-document.getElementById('title').addEventListener('keydown', e => { if (e.key === 'Enter') save('title'); });
+document.querySelectorAll('input[id^="cfg-"]').forEach(function (inp) {
+  inp.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') saveConfig(inp.id.replace('cfg-', ''));
+  });
+});
+
+// 打开 #weather 这类地址直接落到对应功能页；没有 hash 就记住上次看的
+var wanted = (location.hash || '').replace('#', '') || null;
+if (!wanted) { try { wanted = localStorage.getItem('eink_tab'); } catch (e) {} }
+switchTab(wanted || 'device');
+window.addEventListener('hashchange', function () {
+  var h = (location.hash || '').replace('#', '');
+  if (h) switchTab(h);
+});
 </script>
 </body>
 </html>

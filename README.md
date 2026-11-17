@@ -114,10 +114,11 @@ server/
   app.py            Flask 应用与路由
   renderer.py       1bpp 帧编码（296x128，MSB first，1=黑，4736 字节）
   pages.py          天气 / 月历页面渲染
-  weather.py        Open-Meteo 取数（10 分钟缓存，失败沿用上次结果）
+  weather.py        Open-Meteo 取数（后台线程 + 落盘缓存，渲染路径只读缓存）
   device_state.py   设备在线状态（最后活动、来源、计数，落盘）
   config_store.py   配置存储（城市、坐标、屏幕标题）
-  templates/        控制台 Web UI
+  templates/        控制台页面
+  static/console.css 控制台样式（深色主题，沿用 petd 设计令牌）
   tools/check_frame.py  位序自检：把 .bin 解回图验证 1=黑
 server/openclaw-eink-mini.service
 ```
@@ -150,6 +151,31 @@ server/openclaw-eink-mini.service
 新增功能时，服务端多一个渲染页 → 清单多一页 → 控制台多一个分区，设备端不用改。
 
 设备只说纯 HTTP，所以实例挂在 HTTP 路径前缀 `/eink-mini/` 下。
+
+## 天气取数
+
+照 ai-agent-pet 的 petd 做法：**后台线程取数，渲染路径只读缓存**。
+设备 HTTP 超时 15 秒，服务端在请求处理里同步取数会直接把这一页拉挂 ——
+实测改之前首次拉天气位图要 10 秒以上，改之后稳定在 30-80 毫秒。
+
+- 缓存落盘 `server/data/weather_cache.json`，30 分钟 TTL
+- gunicorn 起 2 个 worker，各有后台线程；实际取数靠 flock 去重
+- 取数失败沿用上次成功的数据，不让屏变空白
+- 内置 60 多个常见城市坐标表：地理编码只认地级市（「杭州市西湖区」查不到），
+  内置能省一次请求也省一次猜错
+- WMO 天气码用中国气象的观测术语。屏上放不下的用 3 字简称
+  （`describe_short`），预报三列并排，描述写长了会挤到隔壁列
+
+## 控制台
+
+深色单页，标签页布局，设计令牌沿用 petd 后台：
+
+- 标签页：设备 / 时钟 / 天气 / 月历 —— **一个功能一区，配置和预览同区**
+- 设备页：在线状态、最后活动、来源 IP、UA、拉取次数、设备连接参数
+- 功能区：左侧设备画面预览，右侧该功能的配置项
+- 配置项由服务端的 `CONFIG_FIELDS` 表长出来：加一个可配置项 = 加一行，前后端都跟着长
+- 地址栏 `#weather` 这类 hash 可以直接落到对应功能页
+- 静态资源用相对路径（`static/console.css`），公网访问不会掉到站点根
 
 ## 许可
 

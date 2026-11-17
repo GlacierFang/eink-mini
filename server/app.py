@@ -1,17 +1,18 @@
-"""eink-mini 服务端：页面清单 + 1bpp 位图 + 设备状态。
+"""eink-mini 服务端：页面清单 + 1bpp 位图 + 设备状态 + 功能配置。
 
 设备侧契约（与固件 ink_client.cpp 对齐）：
   GET  /api/manifest.json      页面清单，最多 12 页
   GET  /api/page/{id}.bin      1bpp 帧，296x128，4736 字节
 
 浏览器侧：
-  GET  /                       控制台（功能分区：预览 + 配置 + 设备状态）
+  GET  /                       控制台（标签页：设备 + 每个功能一区）
   GET  /preview/{id}.png       页面预览图
-  GET  /api/config             读取配置
+  GET  /api/config             读配置
   POST /api/config             改配置
   GET  /api/device             设备在线状态
 """
 
+import hashlib
 import json
 import threading
 from datetime import datetime
@@ -26,37 +27,68 @@ import weather
 
 app = Flask(__name__)
 
-# 页面注册表：id、type、标题
+MAX_PAGES = 12
+
+# 配置字段表：控制台的表单和 POST 校验都从这里长出来。
+# 加一个可配置项 = 在这里加一行，前后端都跟着长，不用改两处。
+CONFIG_FIELDS = {
+    "city": {
+        "label": "城市",
+        "type": "text",
+        "hint": "填城市名，比如「杭州」。改了会重新查坐标并立刻取一次天气。",
+    },
+    "device_title": {
+        "label": "屏幕标题",
+        "type": "text",
+        "hint": "显示在设备时钟页右上角。只能用 ASCII —— 设备屏没有中文字库。",
+    },
+}
+
+# 页面注册表：id、type、标题、控制台里归到哪个功能分区
 # type 的含义由固件决定：native=设备本地渲染，bitmap=服务端下发位图
 PAGES = [
-    {"id": "clock", "type": "native", "title": "CLOCK"},
-    {"id": "weather", "type": "bitmap", "title": "WEATHER"},
-    {"id": "calendar", "type": "bitmap", "title": "CALENDAR"},
+    {
+        "id": "clock",
+        "type": "native",
+        "title": "时钟",
+        "label": "CLOCK",
+        "desc": "设备本地渲染的翻页钟，断网也能显示，不消耗服务端。",
+        "fields": ["device_title"],
+    },
+    {
+        "id": "weather",
+        "type": "bitmap",
+        "title": "天气",
+        "label": "WEATHER",
+        "desc": "服务端取 Open-Meteo 的当前天气和三天预报，渲染成位图下发。",
+        "fields": ["city"],
+    },
+    {
+        "id": "calendar",
+        "type": "bitmap",
+        "title": "月历",
+        "label": "CALENDAR",
+        "desc": "当月日历，服务端渲染成位图下发。当天日期反白高亮。",
+        "fields": [],
+    },
 ]
-
-MAX_PAGES = 12
 
 # 渲染缓存：key = (page_id, 缓存键)，值 = (图片, 失效时间戳)
 _cache = {}
 _cache_lock = threading.Lock()
 
-WEATHER_CACHE_KEY = "weather"
-CALENDAR_CACHE_KEY = "calendar"
-
 
 def _cache_key(page_id):
     if page_id == "weather":
-        cfg = config_store.get_config()
-        w = weather.get_weather(cfg["lat"], cfg["lon"], cfg["city"])
-        stamp = "no-data" if not w else str(w.get("temp")) + str(w.get("code"))
-        return (page_id, WEATHER_CACHE_KEY, stamp)
+        # 天气缓存的取数时间是缓存键：数据没更新就不重画
+        return (page_id, "weather", weather.get_weather_stamp())
     if page_id == "calendar":
-        return (page_id, CALENDAR_CACHE_KEY, datetime.now().strftime("%Y%m%d"))
+        return (page_id, "calendar", datetime.now().strftime("%Y%m%d"))
     return (page_id, "static", "")
 
 
 def render_page(page_id):
-    """渲染指定页面，返回 PIL 图片。"""
+    """渲染指定页面，返回 PIL 图片。只读缓存，不碰网络。"""
     key = _cache_key(page_id)
     now = datetime.now().timestamp()
     with _cache_lock:
@@ -65,8 +97,7 @@ def render_page(page_id):
             return hit[0]
     if page_id == "weather":
         cfg = config_store.get_config()
-        data = weather.get_weather(cfg["lat"], cfg["lon"], cfg["city"])
-        img = pages.render_weather(data, cfg["city"])
+        img = pages.render_weather(weather.get_weather(), cfg["city"])
     elif page_id == "calendar":
         img = pages.render_calendar()
     else:
@@ -94,12 +125,36 @@ def no_cache(resp):
 def index():
     cfg = config_store.get_config()
     state = device_state.get_state()
+    w = weather.get_weather()
+    features = []
+    for p in PAGES:
+        features.append(
+            {
+                "id": p["id"],
+                "title": p["title"],
+                "label": p["label"],
+                "type": p["type"],
+                "desc": p["desc"],
+                "fields": [
+                    {
+                        "key": k,
+                        "label": CONFIG_FIELDS[k]["label"],
+                        "hint": CONFIG_FIELDS[k]["hint"],
+                        "value": cfg.get(k, ""),
+                    }
+                    for k in p["fields"]
+                    if k in CONFIG_FIELDS
+                ],
+            }
+        )
     return render_template(
         "index.html",
-        pages=PAGES,
+        features=features,
         config=cfg,
         device=state,
         device_online=device_state.is_online(state),
+        weather=w,
+        weather_at=weather.get_weather_at(),
     )
 
 
@@ -108,23 +163,47 @@ def health():
     return jsonify({"ok": True, "service": "eink-mini", "time": datetime.now().isoformat()})
 
 
+def _page_version(page_id):
+    """页面内容指纹：内容不变则版本不变。
+
+    只用便宜的输入算，绝不在这里渲染页面 —— 渲染会拖慢清单接口，
+    而设备等不了。
+    """
+    entry = _page_entry(page_id)
+    if not entry:
+        return 0
+    cfg = config_store.get_config()
+    if page_id == "weather":
+        seed = "weather|%s|%.4f|%.4f|%d" % (
+            cfg["city"], cfg["lat"], cfg["lon"], weather.get_weather_stamp()
+        )
+    elif page_id == "calendar":
+        seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
+    else:
+        seed = "clock|%s" % cfg.get("device_title", "")
+    return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _manifest_version():
+    payload = json.dumps([_page_version(p["id"]) for p in PAGES], sort_keys=True)
+    return int(hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8], 16)
+
+
 @app.route("/api/manifest.json")
 def manifest():
-    # 设备靠 version 判断页面是否变了，所以 version 必须跟着内容走，
-    # 不能用时间戳——那样每次请求都变，设备会反复重下所有位图。
     cfg = config_store.get_config()
     pages_out = []
     for i, p in enumerate(PAGES[:MAX_PAGES]):
         # native 页由设备本地渲染，标题直接用配置里的 device_title，
         # 这样控制台改标题才会真的出现在屏上
-        title = p["title"]
+        label = p["label"]
         if p["type"] == "native":
-            title = cfg.get("device_title") or p["title"]
+            label = cfg.get("device_title") or p["label"]
         pages_out.append(
             {
                 "id": p["id"],
                 "type": p["type"],
-                "title": title,
+                "title": label,
                 "order": i,
                 "version": _page_version(p["id"]),
             }
@@ -142,35 +221,6 @@ def manifest():
         user_agent=request.headers.get("User-Agent"),
     )
     return resp
-
-
-def _page_version(page_id):
-    """页面内容指纹：内容不变则版本不变。
-
-    只用便宜的输入算，绝不在这里渲染页面——渲染天气页会触发实时天气请求，
-    会把清单接口阻塞住。版本号的作用是让设备知道"要不要重下这张图"，
-    配置和日期变了才算变了，够用。
-    """
-    import hashlib
-
-    entry = _page_entry(page_id)
-    if not entry:
-        return 0
-    cfg = config_store.get_config()
-    if page_id == "weather":
-        seed = "weather|%s|%.4f|%.4f" % (cfg["city"], cfg["lat"], cfg["lon"])
-    elif page_id == "calendar":
-        seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
-    else:
-        seed = "clock|%s" % cfg.get("device_title", "")
-    return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
-
-
-def _manifest_version():
-    import hashlib
-
-    payload = json.dumps([_page_version(p["id"]) for p in PAGES], sort_keys=True)
-    return int(hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8], 16)
 
 
 @app.route("/api/page/<page_id>.bin")
@@ -212,31 +262,45 @@ def get_cfg():
     return jsonify(config_store.get_config())
 
 
+def _validate_field(key, raw):
+    """校验一个配置项，返回 (值, 错误信息)。"""
+    value = str(raw).strip()
+    if key == "city":
+        if not value:
+            return None, "城市不能为空"
+        hit = weather.geocode(value)
+        if not hit:
+            return None, "查不到这个城市：" + value
+        return {"city": value, "lat": hit[0], "lon": hit[1]}, ""
+    if key == "device_title":
+        if not value:
+            return None, "标题不能为空"
+        if not value.isascii():
+            return None, "标题只能用 ASCII（设备屏没有中文字库）"
+        return {"device_title": value[:16]}, ""
+    return None, "未知配置项：" + key
+
+
 @app.route("/api/config", methods=["POST"])
 def set_cfg():
     data = request.get_json(silent=True) or {}
     patch = {}
-    if "city" in data:
-        city = str(data["city"]).strip()
-        if not city:
-            return jsonify({"ok": False, "error": "城市不能为空"}), 400
-        hit = weather.geocode(city)
-        if not hit:
-            return jsonify({"ok": False, "error": "查不到这个城市：" + city}), 400
-        patch["city"] = city
-        patch["lat"] = hit[0]
-        patch["lon"] = hit[1]
-    if "device_title" in data:
-        title = str(data["device_title"]).strip()
-        if not title:
-            return jsonify({"ok": False, "error": "标题不能为空"}), 400
-        # 设备屏上没有中文字库，标题只能是 ASCII
-        if not title.isascii():
-            return jsonify({"ok": False, "error": "标题只能用 ASCII（设备屏无中文字库）"}), 400
-        patch["device_title"] = title[:16]
+    for key, raw in data.items():
+        if key not in CONFIG_FIELDS:
+            continue
+        values, err = _validate_field(key, raw)
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        patch.update(values)
     if not patch:
         return jsonify({"ok": False, "error": "没有可更新的字段"}), 400
-    return jsonify({"ok": True, "config": config_store.update_config(patch)})
+    cfg = config_store.update_config(patch)
+    # 改了城市要重取天气，但别让这个请求等着 —— 后台线程去取
+    if "city" in patch:
+        threading.Thread(
+            target=weather.refresh, kwargs={"force": True}, daemon=True
+        ).start()
+    return jsonify({"ok": True, "config": cfg})
 
 
 @app.route("/api/device")
@@ -249,6 +313,10 @@ def api_device():
             "pages": [p["id"] for p in PAGES],
         }
     )
+
+
+# 天气后台取数线程。gunicorn 每个 worker 各起一个，靠 flock 去重实际取数。
+weather.start_background()
 
 
 if __name__ == "__main__":
