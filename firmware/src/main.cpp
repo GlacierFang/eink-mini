@@ -1,7 +1,7 @@
-// eink-mini firmware -- step 1 stub.
+// eink-mini 固件 —— 第 1 步占位程序。
 //
-// This file only proves the build pipeline and the flash procedure work.
-// The real firmware (flip clock, button, partial refresh, provisioning) lands in step 2.
+// 这个文件只用来验证编译链路和烧录流程能不能跑通。
+// 真正的固件（翻页时钟、按键、局刷、配网）在第 2 步。
 #include <Arduino.h>
 
 static const uint8_t LED_PIN = 8;
@@ -10,12 +10,12 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("[eink-mini] firmware stub (step 1) -- display not driven yet");
-  Serial.print("[eink-mini] chip: ");
+  Serial.println("[eink-mini] 固件占位程序（第 1 步）—— 尚未驱动屏幕");
+  Serial.print("[eink-mini] 芯片: ");
   Serial.println(ESP.getChipModel());
   Serial.print("[eink-mini] flash: ");
   Serial.println(ESP.getFlashChipSize() / 1024 / 1024);
-  Serial.println("[eink-mini] expect panel GDEH029A1 296x128 SSD1680 once step 2 lands");
+  Serial.println("[eink-mini] 第 2 步落地后应自检面板 GDEH029A1 296x128 SSD1680");
   pinMode(LED_PIN, OUTPUT);
 }
 

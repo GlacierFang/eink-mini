@@ -1,9 +1,6 @@
-name: build
+name: 编译固件
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -14,21 +11,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: 拉代码
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 装 Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install PlatformIO
+      - name: 装 PlatformIO
         run: |
           python -m pip install --upgrade pip
           python -m pip install --upgrade platformio
           pio --version
 
-      - name: Cache PlatformIO
+      - name: 缓存 PlatformIO
         uses: actions/cache@v4
         with:
           path: |
@@ -36,12 +33,12 @@ jobs:
             firmware/.pio
           key: pio-${{ hashFiles('firmware/platformio.ini') }}
 
-      - name: Build firmware
+      - name: 编译固件
         working-directory: firmware
         run: |
           set -o pipefail
           {
-            echo "### platformio version"
+            echo "### platformio 版本"
             pio --version
             echo
             echo "### platformio.ini"
@@ -51,16 +48,16 @@ jobs:
           } > build.log
           pio run -v 2>&1 | tee -a build.log
 
-      - name: Publish build log to summary
+      - name: 写构建日志到 summary
         if: always()
         working-directory: firmware
         run: |
-          echo "### Build log" >> $GITHUB_STEP_SUMMARY
+          echo "### 构建日志" >> $GITHUB_STEP_SUMMARY
           echo "~~~" >> $GITHUB_STEP_SUMMARY
           cat build.log >> $GITHUB_STEP_SUMMARY
           echo "~~~" >> $GITHUB_STEP_SUMMARY
 
-      - name: Merge binary
+      - name: 合并 bin
         if: success()
         working-directory: firmware/.pio/build/esp32-c3-pro-mini
         run: |
@@ -83,10 +80,10 @@ jobs:
               buf[off:off + len(data)] = data
           out = pathlib.Path("eink-mini-merged.bin")
           out.write_bytes(bytes(buf))
-          print(f"merged {out} -> {len(buf)} bytes (0x{end:X}), flash at 0x0")
+          print(f"已合并 {out} -> {len(buf)} 字节 (0x{end:X})，烧录地址 0x0")
           PY
 
-      - name: Package artifacts
+      - name: 上传产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -98,7 +95,7 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
-      - name: Publish build log
+      - name: 失败时把构建日志写进 issue
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,32 +104,18 @@ jobs:
         working-directory: firmware
         run: |
           set +e
-          echo "--- channel 1: repo file on ci-logs branch ---"
-          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
-            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq ".object.sha")
-            gh api --method POST "repos/$REPO/git/refs" -f ref="refs/heads/ci-logs" -f sha="$MAIN_SHA" >/dev/null 2>&1
-          fi
-          B64=$(base64 -w0 build.log)
-          gh api --method PUT "repos/$REPO/contents/ci/build-$SHA.log" \
-            -f message="ci: build log $SHA" \
-            -f content="$B64" \
-            -f branch=ci-logs
-          echo "--- channel 2: issue ---"
           {
-            echo "Build failed at commit $SHA"
-            echo
-            echo "<details><summary>build.log</summary>"
+            echo "编译失败，commit $SHA"
             echo
             echo "~~~"
             cat build.log
             echo "~~~"
-            echo "</details>"
           } > /tmp/body.md
           gh issue create --repo "$REPO" \
-            --title "CI build failed: $SHA" \
+            --title "CI 编译失败: $SHA" \
             --body-file /tmp/body.md
 
-      - name: Upload build log
+      - name: 上传构建日志
         if: failure()
         uses: actions/upload-artifact@v4
         with:

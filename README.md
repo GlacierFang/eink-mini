@@ -1,86 +1,93 @@
 # eink-mini
 
-2.9 inch black/white e-paper desk terminal: flip clock, weather, month calendar, message board.
-Short press cycles through the pages. The device is a dumb display -- the companion server
-renders bitmaps, the device only draws them.
+2.9 寸黑白电子墨水屏桌面终端：翻页时钟、天气、月历、留言板。
 
-Status: **step 1 of 5** (repository + build pipeline). Display firmware lands in step 2.
+短按切换画面。设备只当哑终端——位图由配套服务端渲染，设备只负责显示。
 
-## Hardware
+## 现在做到哪一步了
 
-| Part | Spec |
+> 🟡 **第 1 步：仓库已立**。GitHub `GlacierFang/eink-mini`，MIT，README 与固件注释已中文化。
+>
+> ⛔ **屏幕固件还没写**。当前 `firmware/src/main.cpp` 是占位程序，只验证编译与烧录链路，**不驱动屏幕**。
+>
+> ⛔ **配套服务端与 Web UI 还没做**。
+>
+> 🔒 **编译不会自动跑**。GitHub Actions 改成手动触发（`workflow_dispatch`），要编译时自己点一下。
+
+## 硬件
+
+| 部件 | 规格 |
 |---|---|
-| Panel | GDEH029A1, 2.9 inch, 296x128, SSD1680 controller, black/white only (no red, no yellow) |
-| MCU | ESP32-C3 Pro mini, USB powered, always on |
-| E-paper driver board | v1.4 universal board, FPC socket for 24P / 26P / 34P |
-| FPC cable | 24P |
-| Button | 12x12x12mm tactile switch, 4 pins (two pairs internally paralleled) |
+| 屏 | GDEH029A1，2.9 寸，296x128，SSD1680 驱动，纯黑白（无红、无黄） |
+| 主控 | ESP32-C3 Pro mini，USB 供电，常亮 |
+| 墨水屏驱动板 | v1.4 通用板，24P / 26P / 34P FPC 座 |
+| FPC 排线 | 24P |
+| 按键 | 12x12x12mm 微动开关，4 脚（内部两两并联） |
 
-Panel notes:
+屏的硬事实：
 
-- SSD1680 has hardware fast refresh: full refresh about 3s, partial refresh about 0.3s
-- The driver board exposes CS1 and CS2 for dual-controller panels -- a single-controller panel needs CS1 and CS2 tied together
-- The driver board BUSY polarity may be inverted, so firmware must not assume a level
-- The panel has no grayscale: every pixel is black or white
+- SSD1680 有硬件快速刷新：全刷约 3s，局刷约 0.3s
+- 驱动板引出 CS1 / CS2 供双控制器屏使用——单控制器屏要把 CS1 和 CS2 短接一起
+- 驱动板 BUSY 极性可能相反，固件不能假设固定电平
+- 屏没有灰度：每个像素非黑即白
 
-## Wiring (ESP32-C3 Pro mini)
+## 接线（ESP32-C3 Pro mini）
 
-| Driver board | C3 |
+| 驱动板 | C3 |
 |---|---|
 | GND | GND |
 | 3V3 | 3V3 |
 | SCK | GPIO6 |
 | SDA | GPIO7 |
-| CS1 | GPIO1 (tie CS2 to CS1) |
+| CS1 | GPIO1（CS2 与 CS1 短接） |
 | DC | GPIO4 |
 | RST | GPIO10 |
 | BUSY | GPIO3 |
 
-Button: one leg to GPIO5, the other to GND. The firmware uses the internal pull-up.
+按键：一脚接 GPIO5，另一脚接 GND。固件用内部上拉。
 
-## Build (GitHub Actions)
+## 编译（GitHub Actions，手动触发）
 
-Push to main and the workflow compiles the firmware and uploads the artifacts.
+Actions 里点 **Run workflow** 手动触发，跑完在 Artifacts 里下载：
 
-- **eink-mini-merged.bin** -- merged image (bootloader + partitions + app), flash at address **0x0**
-- **bootloader.bin / partitions.bin / boot_app0.bin / firmware.bin** -- the four separate files
+- **eink-mini-merged.bin** —— 合并镜像（bootloader + partitions + app），烧录地址 **0x0**
+- **bootloader.bin / partitions.bin / boot_app0.bin / firmware.bin** —— 四个独立文件
 
-Download them from the Actions tab: latest build run -> Artifacts -> eink-mini-firmware.
+## 用 Flash Download Tools 烧录
 
-## Flash with Flash Download Tools
+1. USB 接上板子。
+2. ChipType **ESP32-C3**，WorkMode **SPI**，SPI Speed **40MHz**，Flash Size **4MB**，SPI Mode **DIO**。
+3. 二选一：载入 **eink-mini-merged.bin** 填 **0x0**（勾 DoNotChgBin）；
+   或分别填四个文件——bootloader.bin 0x0、partitions.bin 0x8000、boot_app0.bin 0xE000、firmware.bin 0x10000。
+4. 按住 BOOT，点一下 RESET，松开 BOOT，再按 START。
+5. 烧完固件会让板载 LED 每秒闪一次（占位程序，不驱动屏幕）。
 
-1. Plug the board in over USB.
-2. ChipType **ESP32-C3**, WorkMode **SPI**, SPI Speed **40MHz**, Flash Size **4MB**, SPI Mode **DIO**.
-3. Either load **eink-mini-merged.bin** at **0x0** (tick DoNotChgBin),
-   or fill the four files: bootloader.bin 0x0, partitions.bin 0x8000, boot_app0.bin 0xE000, firmware.bin 0x10000.
-4. Hold BOOT, tap RESET, release BOOT, then press START.
-5. When it finishes, the stub blinks the onboard LED once per second.
+## 配套服务端（第 3 步，还没做）
 
-## Companion server (step 3, not implemented yet)
+设备从配套服务端拉 1bpp 帧：
 
-The device pulls 1bpp frames from a companion server:
-
-| Path | Purpose |
+| 路径 | 用途 |
 |---|---|
-| GET /api/manifest.json | page list: id, title, type, order, version |
-| GET /api/page/{id}.bin | 1bpp frame, 296x128, 4736 bytes |
-| GET /preview/{id}.png | human-readable preview |
-| GET /api/message | write entry: push a message to the screen |
-| GET / | web UI |
+| GET /api/manifest.json | 页面清单：id、标题、类型、顺序、版本 |
+| GET /api/page/{id}.bin | 1bpp 帧，296x128，4736 字节 |
+| GET /preview/{id}.png | 给人看的预览图 |
+| GET /api/message | 写入入口：往屏幕推一条消息 |
+| GET / | Web UI |
 
-Frame format: 1bpp, MSB first, bit 1 means black, stride 37 bytes, 4736 bytes per frame.
+帧格式：1bpp，MSB first，bit 1 表示黑，行跨度 37 字节，每帧 4736 字节。
 
-The device speaks plain HTTP only, so a self-hosted instance needs an HTTP path prefix
-(or a local TLS terminator in front of it).
+设备只说纯 HTTP，所以自部署实例需要挂一个 HTTP 路径前缀（或前面加一层本地 TLS 终结）。
 
-## Roadmap
+## 路线图
 
-1. Repository and build pipeline (done)
-2. Firmware: flip clock, button, frame pull, dirty-rect partial refresh, provisioning
-3. Server: page registry, 1bpp renderer, web UI, message write entry
-4. Deployment: nginx path prefix, port registration, systemd unit
-5. Run on the host and verify in the web UI
+1. 仓库 + 编译流水线（手动触发）——**已完成**
+2. 固件：翻页时钟、按键、拉帧、脏矩形局刷、配网
+3. 服务端：页面注册表、1bpp 渲染、Web UI、留言写入入口
+4. 部署：nginx 路径前缀、端口注册、systemd unit
+5. 跑起来，在 Web UI 里验收
 
-## License
+> 屏幕显示内容一律英文——设备零中文字库，只能出英文和数字。
+
+## 许可
 
 MIT
