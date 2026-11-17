@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: 允许 git 读取工作区
         run: git config --global --add safe.directory '*'
@@ -21,33 +23,41 @@ jobs:
         with:
           python-version: "3.11.9"
 
-      - name: 缓存 PlatformIO
+      # 只缓存下载体积大的包，不缓存 ~/.platformio/penv。
+      # penv 里是 PlatformIO 自己的虚拟环境，shebang 写死了创建时的 Python 路径；
+      # Python 补丁号一变就变成 bad interpreter，命令直接 126 失败。
+      # 缓存整包 ~/.platformio 就会把它带进来。
+      - name: 缓存 PlatformIO 包
         uses: actions/cache@v4
         with:
           path: |
-            ~/.platformio
-            firmware/.pio
-          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-pkg-${{ hashFiles('firmware/platformio.ini') }}-py3.11.9
 
       - name: 装 PlatformIO
         run: |
+          set +e
+          rm -rf ~/.platformio/penv
           python -m pip install --upgrade pip
           python -m pip install --upgrade platformio
           pio --version
+          echo "PIOCMD_RC=$?"
 
       # Actions 的日志/artifact 下载主机在部分网络下取不到，
-      # 所以整份日志只留 artifact，真实错误走 ::error:: annotation（api.github.com，稳定可读）。
+      # 所以整份日志走 git 推分支留档，真实错误走 ::error:: annotation（api.github.com，稳定可读）。
       - name: 编译固件
         working-directory: firmware
         run: |
           set +e
           {
-            echo '### platformio'
+            echo '### pio 版本'
             pio --version
             echo
+            echo '### platformio.ini'
             cat platformio.ini
             echo
-            echo '### pio run'
+            echo '### pio run -v'
           } > build.log
           pio run -v 2>&1 | tee -a build.log
           rc=${PIPESTATUS[0]}
@@ -59,27 +69,24 @@ jobs:
         working-directory: firmware
         run: |
           set +e
-          {
-            echo '### 编译错误'
-            echo ''
-            grep -hE 'error:|fatal error:|undefined reference|collect2:|Compilation error|\*\*\* \[.*\*\*\*' build.log \
-              | grep -vE 'Node\.js 20 is deprecated' \
-              | head -40 \
-              | while IFS= read -r l; do
-                  esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g')
-                  echo "::error::$esc"
-                  echo "- $l"
-                done
-            echo ''
-            echo '### 日志尾部 40 行'
-            echo ''
-            echo '::group::'
-            tail -40 build.log
-            echo '::endgroup::'
-          } > /tmp/summary.md
-          # summary 上限 1MB，只写筛出来的内容
-          wc -c /tmp/summary.md
-          head -c 900000 /tmp/summary.md >> $GITHUB_STEP_SUMMARY
+          echo "日志字节数: $(wc -c < build.log)"
+          echo '### 错误行'
+          grep -hn -iE 'error:|fatal error|undefined reference|no such file|command not found|bad interpreter|permission denied|cannot find|failed|error [0-9]+' build.log \
+            | grep -viE 'Node\.js 20 is deprecated|deprecat' \
+            | head -25 | while IFS= read -r l; do
+                esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-500)
+                echo "::error::$esc"
+              done
+          echo '### 日志头 12 行'
+          head -12 build.log | while IFS= read -r l; do
+              esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-400)
+              echo "::notice::$esc"
+            done
+          echo '### 日志尾 25 行'
+          tail -25 build.log | while IFS= read -r l; do
+              esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-400)
+              echo "::notice::$esc"
+            done
 
       - name: 合并 bin
         if: success()
@@ -119,28 +126,36 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
-      # 整份日志留档：截断到 500KB（base64 后约 667KB，在 Contents API 1MB 限制内）。
-      # 失败必须显式暴露，不能被 set +e 吞掉。
-      - name: 把构建日志发布到 ci-logs 分支
+      # 整份日志留档：用 git plumbing 推，不走 Contents API（那里有 1MB 限制），
+      # 也不走 artifact（下载主机在部分网络下取不到）。
+      - name: 把构建日志推到 ci-logs 分支
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         working-directory: firmware
         run: |
           set -e
-          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
-            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
-            gh api --method POST "repos/$REPO/git/refs" -f ref='refs/heads/ci-logs' -f sha="$MAIN_SHA"
+          git config user.name 'ci'
+          git config user.email 'ci@local'
+          cp build.log "ci-build-$SHA.log"
+          BLOB=$(git hash-object -w "ci-build-$SHA.log")
+          BASE=''
+          if git ls-remote --exit-code origin refs/heads/ci-logs >/dev/null 2>&1; then
+            git fetch --depth 1 origin refs/heads/ci-logs:refs/remotes/origin/ci-logs
+            BASE=$(git rev-parse refs/remotes/origin/ci-logs)
           fi
-          tail -c 500000 build.log > /tmp/trunc.log || true
-          B64=$(base64 -w0 /tmp/trunc.log)
-          gh api --method PUT "repos/$REPO/contents/ci/build-$SHA.log" \
-            -f message="ci: build log $SHA" \
-            -f content="$B64" \
-            -f branch=ci-logs >/dev/null
-          echo "日志已发布到 ci-logs 分支 ($(wc -c < /tmp/trunc.log) 字节)"
+          TMPIDX=$(mktemp)
+          export GIT_INDEX_FILE=$TMPIDX
+          if [ -n "$BASE" ]; then git read-tree "$BASE^{tree}"; else git read-tree --empty; fi
+          git update-index --add --cacheinfo 100644,$BLOB,"ci/build-$SHA.log"
+          TREE=$(git write-tree)
+          if [ -n "$BASE" ]; then
+            COMMIT=$(git commit-tree "$TREE" -p "$BASE" -m "ci: build log $SHA")
+          else
+            COMMIT=$(git commit-tree "$TREE" -m "ci: build log $SHA")
+          fi
+          git push origin "$COMMIT:refs/heads/ci-logs"
+          echo "日志已推到 ci-logs 分支: ci/build-$SHA.log"
 
       - name: 上传构建日志
         if: always()
