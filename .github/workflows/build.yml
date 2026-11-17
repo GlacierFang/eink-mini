@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build:
@@ -39,21 +40,25 @@ jobs:
         working-directory: firmware
         run: |
           set -o pipefail
-          echo "### pio version" > build.log
-          pio --version >> build.log 2>&1
-          echo "### platformio.ini" >> build.log
-          cat platformio.ini >> build.log
-          echo "### pio run" >> build.log
-          pio run 2>&1 | tee -a build.log
+          {
+            echo "### platformio version"
+            pio --version
+            echo
+            echo "### platformio.ini"
+            cat platformio.ini
+            echo
+            echo "### pio run"
+          } > build.log
+          pio run -v 2>&1 | tee -a build.log
 
       - name: Publish build log to summary
         if: always()
         working-directory: firmware
         run: |
-          echo '### Build log' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "### Build log" >> $GITHUB_STEP_SUMMARY
+          echo "~~~" >> $GITHUB_STEP_SUMMARY
           cat build.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "~~~" >> $GITHUB_STEP_SUMMARY
 
       - name: Merge binary
         if: success()
@@ -93,21 +98,23 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
-      - name: Publish build log to ci-logs branch
+      - name: Open issue with build log
         if: failure()
         working-directory: firmware
         run: |
-          set -x
-          cd "$GITHUB_WORKSPACE"
-          git config user.name "github-actions[bot]"
-          git config user.email "41869137+github-actions[bot]@users.noreply.github.com"
-          git fetch origin ci-logs || true
-          git checkout -B ci-logs origin/ci-logs 2>/dev/null || git checkout -B ci-logs
-          mkdir -p ci
-          cp firmware/build.log ci/build.log || echo "no build.log captured" > ci/build.log
-          git add ci/build.log
-          git commit -m "ci: build log from ${{ github.sha }}" || true
-          git push origin ci-logs
+          {
+            echo "Build failed at commit ${{ github.sha }}"
+            echo
+            echo "<details><summary>build.log</summary>"
+            echo
+            echo "~~~"
+            cat build.log
+            echo "~~~"
+            echo "</details>"
+          } > /tmp/body.md
+          gh issue create --repo ${{ github.repository }} \
+            --title "CI build failed: ${{ github.sha }}" \
+            --body-file /tmp/body.md || echo "issue create failed"
 
       - name: Upload build log
         if: failure()
