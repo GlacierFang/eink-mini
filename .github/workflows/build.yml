@@ -9,6 +9,23 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pio6118-plat690
+            pio: "6.1.18"
+            plat: "espressif32@6.9.0"
+            scons: ""
+          - name: pio6118-plat660
+            pio: "6.1.18"
+            plat: "espressif32@6.6.0"
+            scons: ""
+          - name: pio620-plat690-scons452
+            pio: "6.2.0"
+            plat: "espressif32@6.9.0"
+            scons: "tool-scons@4.5.2"
+    name: build-${{ matrix.name }}
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
@@ -24,28 +41,35 @@ jobs:
           python-version: "3.11.9"
 
       # 只缓存下载体积大的包，不缓存 ~/.platformio/penv。
-      # penv 里是 PlatformIO 自己的虚拟环境，shebang 写死了创建时的 Python 路径；
-      # Python 补丁号一变就变成 bad interpreter，命令直接 126 失败。
-      # 缓存整包 ~/.platformio 就会把它带进来。
+      # penv 是 PlatformIO 自己的虚拟环境，shebang 写死创建时的 Python 路径，
+      # Python 补丁号一变就 bad interpreter，命令直接 126 失败。
       - name: 缓存 PlatformIO 包
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-pkg-${{ hashFiles('firmware/platformio.ini') }}-py3.11.9
+          key: pio-pkg-${{ matrix.name }}-${{ hashFiles('firmware/platformio.ini') }}-py3.11.9
 
       - name: 装 PlatformIO
         run: |
           set +e
           rm -rf ~/.platformio/penv
           python -m pip install --upgrade pip
-          python -m pip install --upgrade platformio
+          python -m pip install --upgrade 'platformio==${{ matrix.pio }}'
+          if [ -n '${{ matrix.scons }}' ]; then
+            pio pkg install --global --tool '${{ matrix.scons }}' || echo 'tool-scons 指定版本安装失败，继续'
+          fi
           pio --version
-          echo "PIOCMD_RC=$?"
+          python3 -c "import SCons; print('SCons', SCons.__version__)" 2>&1 | tail -1
 
-      # Actions 的日志/artifact 下载主机在部分网络下取不到，
-      # 所以整份日志走 git 推分支留档，真实错误走 ::error:: annotation（api.github.com，稳定可读）。
+      - name: 指定平台版本
+        working-directory: firmware
+        run: |
+          set +e
+          sed -i 's|^platform = .*|platform = ${{ matrix.plat }}|' platformio.ini
+          grep -n 'platform =' platformio.ini
+
       - name: 编译固件
         working-directory: firmware
         run: |
@@ -71,20 +95,15 @@ jobs:
           set +e
           echo "日志字节数: $(wc -c < build.log)"
           echo '### 错误行'
-          grep -hn -iE 'error:|fatal error|undefined reference|no such file|command not found|bad interpreter|permission denied|cannot find|failed|error [0-9]+' build.log \
+          grep -hn -iE 'error:|fatal error|undefined reference|no such file|bad interpreter|command not found|Traceback|TypeError' build.log \
             | grep -viE 'Node\.js 20 is deprecated|deprecat' \
-            | head -25 | while IFS= read -r l; do
-                esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-500)
+            | head -20 | while IFS= read -r l; do
+                esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-400)
                 echo "::error::$esc"
               done
-          echo '### 日志头 12 行'
-          head -12 build.log | while IFS= read -r l; do
-              esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-400)
-              echo "::notice::$esc"
-            done
-          echo '### 日志尾 25 行'
-          tail -25 build.log | while IFS= read -r l; do
-              esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-400)
+          echo '### 日志尾 20 行'
+          tail -20 build.log | while IFS= read -r l; do
+              esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-300)
               echo "::notice::$esc"
             done
 
@@ -118,7 +137,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: eink-mini-firmware
+          name: eink-mini-firmware-${{ matrix.name }}
           path: |
             firmware/.pio/build/esp32-c3-pro-mini/bootloader.bin
             firmware/.pio/build/esp32-c3-pro-mini/partitions.bin
@@ -126,23 +145,24 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
-      # 整份日志留档：用 git plumbing 推，不走 Contents API（那里有 1MB 限制），
-      # 也不走 artifact（下载主机在部分网络下取不到）。
-      - name: 把构建日志推到 ci-logs 分支
+      # 日志走 git 推分支留档：artifact 下载主机在部分网络下取不到，
+      # Contents API 又有 1MB 限制，git push 是唯一稳定通道。
+      - name: 把构建日志推到分支
         if: always()
         env:
           SHA: ${{ github.sha }}
+          BRANCH: ci-logs-${{ matrix.name }}
         working-directory: firmware
         run: |
-          set -e
+          set +e
           git config user.name 'ci'
           git config user.email 'ci@local'
           cp build.log "ci-build-$SHA.log"
           BLOB=$(git hash-object -w "ci-build-$SHA.log")
           BASE=''
-          if git ls-remote --exit-code origin refs/heads/ci-logs >/dev/null 2>&1; then
-            git fetch --depth 1 origin refs/heads/ci-logs:refs/remotes/origin/ci-logs
-            BASE=$(git rev-parse refs/remotes/origin/ci-logs)
+          if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            BASE=$(git rev-parse "refs/remotes/origin/$BRANCH")
           fi
           TMPIDX=$(mktemp)
           export GIT_INDEX_FILE=$TMPIDX
@@ -154,12 +174,11 @@ jobs:
           else
             COMMIT=$(git commit-tree "$TREE" -m "ci: build log $SHA")
           fi
-          git push origin "$COMMIT:refs/heads/ci-logs"
-          echo "日志已推到 ci-logs 分支: ci/build-$SHA.log"
+          git push origin "$COMMIT:refs/heads/$BRANCH" && echo "日志已推到 $BRANCH"
 
       - name: 上传构建日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ matrix.name }}
           path: firmware/build.log
