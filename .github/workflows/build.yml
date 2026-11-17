@@ -98,12 +98,28 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
-      - name: Open issue with build log
+      - name: Publish build log
         if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         working-directory: firmware
         run: |
+          set +e
+          echo "--- channel 1: repo file on ci-logs branch ---"
+          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
+            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq ".object.sha")
+            gh api --method POST "repos/$REPO/git/refs" -f ref="refs/heads/ci-logs" -f sha="$MAIN_SHA" >/dev/null 2>&1
+          fi
+          B64=$(base64 -w0 build.log)
+          gh api --method PUT "repos/$REPO/contents/ci/build-$SHA.log" \
+            -f message="ci: build log $SHA" \
+            -f content="$B64" \
+            -f branch=ci-logs
+          echo "--- channel 2: issue ---"
           {
-            echo "Build failed at commit ${{ github.sha }}"
+            echo "Build failed at commit $SHA"
             echo
             echo "<details><summary>build.log</summary>"
             echo
@@ -112,9 +128,9 @@ jobs:
             echo "~~~"
             echo "</details>"
           } > /tmp/body.md
-          gh issue create --repo ${{ github.repository }} \
-            --title "CI build failed: ${{ github.sha }}" \
-            --body-file /tmp/body.md || echo "issue create failed"
+          gh issue create --repo "$REPO" \
+            --title "CI build failed: $SHA" \
+            --body-file /tmp/body.md
 
       - name: Upload build log
         if: failure()
