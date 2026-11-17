@@ -9,23 +9,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: pio6118-plat690
-            pio: "6.1.18"
-            plat: "espressif32@6.9.0"
-            scons: ""
-          - name: pio6118-plat660
-            pio: "6.1.18"
-            plat: "espressif32@6.6.0"
-            scons: ""
-          - name: pio620-plat690-scons452
-            pio: "6.2.0"
-            plat: "espressif32@6.9.0"
-            scons: "tool-scons@4.5.2"
-    name: build-${{ matrix.name }}
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
@@ -49,26 +32,21 @@ jobs:
           path: |
             ~/.platformio/packages
             ~/.platformio/platforms
-          key: pio-pkg-${{ matrix.name }}-${{ hashFiles('firmware/platformio.ini') }}-py3.11.9
+          key: pio-pkg-${{ hashFiles('firmware/platformio.ini') }}-py3.11.9
 
+      # PlatformIO Core 必须钉在 6.1.18。
+      # 6.2.0 会带 SCons 4.11+，SCons 4.11 起 ${func(args)} 要求被调函数
+      # 接受 target/source/env/for_signature 关键字参数，而 espressif32 的
+      # __get_board_flash_mode(env) 不匹配 -> 替换返回 SCons 的 _Null 哨兵 ->
+      # elf2image 那步 print_cmd_line 里 _Null + str 抛 TypeError。
+      # 6.1.18 + espressif32@6.9.0 实测编译通过。
       - name: 装 PlatformIO
         run: |
           set +e
           rm -rf ~/.platformio/penv
           python -m pip install --upgrade pip
-          python -m pip install --upgrade 'platformio==${{ matrix.pio }}'
-          if [ -n '${{ matrix.scons }}' ]; then
-            pio pkg install --global --tool '${{ matrix.scons }}' || echo 'tool-scons 指定版本安装失败，继续'
-          fi
+          python -m pip install --upgrade 'platformio==6.1.18'
           pio --version
-          python3 -c "import SCons; print('SCons', SCons.__version__)" 2>&1 | tail -1
-
-      - name: 指定平台版本
-        working-directory: firmware
-        run: |
-          set +e
-          sed -i 's|^platform = .*|platform = ${{ matrix.plat }}|' platformio.ini
-          grep -n 'platform =' platformio.ini
 
       - name: 编译固件
         working-directory: firmware
@@ -107,51 +85,35 @@ jobs:
               echo "::notice::$esc"
             done
 
-      - name: 合并 bin
+      - name: 合并整片镜像
         if: success()
-        working-directory: firmware/.pio/build/esp32-c3-pro-mini
+        working-directory: firmware
         run: |
-          python3 - <<'PY'
-          import pathlib
-          parts = [
-              (0x0,     pathlib.Path('bootloader.bin')),
-              (0x8000,  pathlib.Path('partitions.bin')),
-              (0xE000,  pathlib.Path('boot_app0.bin')),
-              (0x10000, pathlib.Path('firmware.bin')),
-          ]
-          end = 0
-          chunks = []
-          for off, p in parts:
-              data = p.read_bytes()
-              chunks.append((off, data))
-              end = max(end, off + len(data))
-          buf = bytearray(b'\xff' * end)
-          for off, data in chunks:
-              buf[off:off + len(data)] = data
-          out = pathlib.Path('eink-mini-merged.bin')
-          out.write_bytes(bytes(buf))
-          print(f'已合并 {out} -> {len(buf)} 字节 (0x{end:X})，烧录地址 0x0')
-          PY
+          set -e
+          python3 tools/merge_bin.py \
+            .pio/build/esp32-c3-pro-mini \
+            .pio/build/esp32-c3-pro-mini/eink-mini-merged.bin \
+            partitions.csv
 
       - name: 上传产物
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: eink-mini-firmware-${{ matrix.name }}
+          name: eink-mini-firmware
           path: |
             firmware/.pio/build/esp32-c3-pro-mini/bootloader.bin
             firmware/.pio/build/esp32-c3-pro-mini/partitions.bin
-            firmware/.pio/build/esp32-c3-pro-mini/boot_app0.bin
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
+            firmware/.pio/build/esp32-c3-pro-mini/flash_args.txt
 
-      # 日志走 git 推分支留档：artifact 下载主机在部分网络下取不到，
-      # Contents API 又有 1MB 限制，git push 是唯一稳定通道。
+      # artifact 下载主机在部分网络下取不到，Contents API 又有 1MB 限制，
+      # git push 是唯一稳定的通道：日志和固件都走它。
       - name: 把构建日志推到分支
         if: always()
         env:
           SHA: ${{ github.sha }}
-          BRANCH: ci-logs-${{ matrix.name }}
+          BRANCH: ci-logs
         working-directory: firmware
         run: |
           set +e
@@ -176,9 +138,42 @@ jobs:
           fi
           git push origin "$COMMIT:refs/heads/$BRANCH" && echo "日志已推到 $BRANCH"
 
+      # 固件产物推到 fw-bin 分支 —— 这样国内网络也能拿到 .bin。
+      - name: 把固件产物推到分支
+        if: success()
+        env:
+          SHA: ${{ github.sha }}
+          BRANCH: fw-bin
+        working-directory: firmware
+        run: |
+          set -e
+          git config user.name 'ci'
+          git config user.email 'ci@local'
+          B=.pio/build/esp32-c3-pro-mini
+          BASE=''
+          if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            git fetch --depth 1 origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            BASE=$(git rev-parse "refs/remotes/origin/$BRANCH")
+          fi
+          TMPIDX=$(mktemp)
+          export GIT_INDEX_FILE=$TMPIDX
+          if [ -n "$BASE" ]; then git read-tree "$BASE^{tree}"; else git read-tree --empty; fi
+          for f in bootloader.bin partitions.bin firmware.bin eink-mini-merged.bin flash_args.txt; do
+            BLOB=$(git hash-object -w "$B/$f")
+            git update-index --add --cacheinfo 100644,$BLOB,"$f"
+          done
+          TREE=$(git write-tree)
+          if [ -n "$BASE" ]; then
+            COMMIT=$(git commit-tree "$TREE" -p "$BASE" -m "fw: $SHA")
+          else
+            COMMIT=$(git commit-tree "$TREE" -m "fw: $SHA")
+          fi
+          git push origin "$COMMIT:refs/heads/$BRANCH"
+          echo "固件已推到 $BRANCH"
+
       - name: 上传构建日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ matrix.name }}
+          name: build-log
           path: firmware/build.log
