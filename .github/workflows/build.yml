@@ -5,25 +5,21 @@ on:
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: 拉代码
         uses: actions/checkout@v4
 
+      - name: 允许 git 读取工作区
+        run: git config --global --add safe.directory '*'
+
       - name: 装 Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: 装 PlatformIO
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --upgrade platformio
-          pio --version
+          python-version: "3.11.9"
 
       - name: 缓存 PlatformIO
         uses: actions/cache@v4
@@ -33,41 +29,69 @@ jobs:
             firmware/.pio
           key: pio-${{ hashFiles('firmware/platformio.ini') }}
 
+      - name: 装 PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade platformio
+          pio --version
+
+      # Actions 的日志/artifact 下载主机在部分网络下取不到，
+      # 所以整份日志只留 artifact，真实错误走 ::error:: annotation（api.github.com，稳定可读）。
       - name: 编译固件
         working-directory: firmware
         run: |
-          set -o pipefail
+          set +e
           {
-            echo "### platformio 版本"
+            echo '### platformio'
             pio --version
             echo
-            echo "### platformio.ini"
             cat platformio.ini
             echo
-            echo "### pio run"
+            echo '### pio run'
           } > build.log
           pio run -v 2>&1 | tee -a build.log
+          rc=${PIPESTATUS[0]}
+          echo "PIORC=$rc" | tee -a build.log
+          exit $rc
 
-      - name: 写构建日志到 summary
+      - name: 提取编译错误
         if: always()
         working-directory: firmware
         run: |
-          echo "### 构建日志" >> $GITHUB_STEP_SUMMARY
-          echo "~~~" >> $GITHUB_STEP_SUMMARY
-          cat build.log >> $GITHUB_STEP_SUMMARY
-          echo "~~~" >> $GITHUB_STEP_SUMMARY
+          set +e
+          {
+            echo '### 编译错误'
+            echo ''
+            grep -hE 'error:|fatal error:|undefined reference|collect2:|Compilation error|\*\*\* \[.*\*\*\*' build.log \
+              | grep -vE 'Node\.js 20 is deprecated' \
+              | head -40 \
+              | while IFS= read -r l; do
+                  esc=$(printf '%s' "$l" | sed -e 's/%/%25/g' -e 's/\r//g')
+                  echo "::error::$esc"
+                  echo "- $l"
+                done
+            echo ''
+            echo '### 日志尾部 40 行'
+            echo ''
+            echo '::group::'
+            tail -40 build.log
+            echo '::endgroup::'
+          } > /tmp/summary.md
+          # summary 上限 1MB，只写筛出来的内容
+          wc -c /tmp/summary.md
+          head -c 900000 /tmp/summary.md >> $GITHUB_STEP_SUMMARY
 
       - name: 合并 bin
         if: success()
         working-directory: firmware/.pio/build/esp32-c3-pro-mini
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           import pathlib
           parts = [
-              (0x0,     pathlib.Path("bootloader.bin")),
-              (0x8000,  pathlib.Path("partitions.bin")),
-              (0xE000,  pathlib.Path("boot_app0.bin")),
-              (0x10000, pathlib.Path("firmware.bin")),
+              (0x0,     pathlib.Path('bootloader.bin')),
+              (0x8000,  pathlib.Path('partitions.bin')),
+              (0xE000,  pathlib.Path('boot_app0.bin')),
+              (0x10000, pathlib.Path('firmware.bin')),
           ]
           end = 0
           chunks = []
@@ -75,12 +99,12 @@ jobs:
               data = p.read_bytes()
               chunks.append((off, data))
               end = max(end, off + len(data))
-          buf = bytearray(b"ÿ" * end)
+          buf = bytearray(b'\xff' * end)
           for off, data in chunks:
               buf[off:off + len(data)] = data
-          out = pathlib.Path("eink-mini-merged.bin")
+          out = pathlib.Path('eink-mini-merged.bin')
           out.write_bytes(bytes(buf))
-          print(f"已合并 {out} -> {len(buf)} 字节 (0x{end:X})，烧录地址 0x0")
+          print(f'已合并 {out} -> {len(buf)} 字节 (0x{end:X})，烧录地址 0x0')
           PY
 
       - name: 上传产物
@@ -95,6 +119,8 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
+      # 整份日志留档：截断到 500KB（base64 后约 667KB，在 Contents API 1MB 限制内）。
+      # 失败必须显式暴露，不能被 set +e 吞掉。
       - name: 把构建日志发布到 ci-logs 分支
         if: always()
         env:
@@ -103,40 +129,21 @@ jobs:
           SHA: ${{ github.sha }}
         working-directory: firmware
         run: |
-          set +e
+          set -e
           if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
-            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq ".object.sha")
-            gh api --method POST "repos/$REPO/git/refs" -f ref="refs/heads/ci-logs" -f sha="$MAIN_SHA" >/dev/null 2>&1
+            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
+            gh api --method POST "repos/$REPO/git/refs" -f ref='refs/heads/ci-logs' -f sha="$MAIN_SHA"
           fi
-          B64=$(base64 -w0 build.log 2>/dev/null)
+          tail -c 500000 build.log > /tmp/trunc.log || true
+          B64=$(base64 -w0 /tmp/trunc.log)
           gh api --method PUT "repos/$REPO/contents/ci/build-$SHA.log" \
             -f message="ci: build log $SHA" \
             -f content="$B64" \
-            -f branch=ci-logs
-          echo "日志已发布到 ci-logs 分支"
-
-      - name: 失败时把构建日志写进 issue
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        working-directory: firmware
-        run: |
-          set +e
-          {
-            echo "编译失败，commit $SHA"
-            echo
-            echo "~~~"
-            cat build.log
-            echo "~~~"
-          } > /tmp/body.md
-          gh issue create --repo "$REPO" \
-            --title "CI 编译失败: $SHA" \
-            --body-file /tmp/body.md
+            -f branch=ci-logs >/dev/null
+          echo "日志已发布到 ci-logs 分支 ($(wc -c < /tmp/trunc.log) 字节)"
 
       - name: 上传构建日志
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
