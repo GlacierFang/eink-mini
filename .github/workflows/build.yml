@@ -33,19 +33,30 @@ jobs:
 
       - name: Build firmware
         working-directory: firmware
-        run: pio run
+        run: |
+          set -o pipefail
+          pio run 2>&1 | tee build.log
+
+      - name: Publish build log to summary
+        if: always()
+        working-directory: firmware
+        run: |
+          echo '### Build log' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat build.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Merge binary
+        if: success()
         working-directory: firmware/.pio/build/esp32-c3-pro-mini
         run: |
           python - <<'PY'
           import pathlib
-          OUT = pathlib.Path("eink-mini-merged.bin")
           parts = [
-              (0x0,      pathlib.Path("bootloader.bin")),
-              (0x8000,   pathlib.Path("partitions.bin")),
-              (0xE000,   pathlib.Path("boot_app0.bin")),
-              (0x10000,  pathlib.Path("firmware.bin")),
+              (0x0,     pathlib.Path("bootloader.bin")),
+              (0x8000,  pathlib.Path("partitions.bin")),
+              (0xE000,  pathlib.Path("boot_app0.bin")),
+              (0x10000, pathlib.Path("firmware.bin")),
           ]
           end = 0
           chunks = []
@@ -53,14 +64,16 @@ jobs:
               data = p.read_bytes()
               chunks.append((off, data))
               end = max(end, off + len(data))
-          buf = bytearray(b"ÿ" * end)
+          buf = bytearray(b"\xff" * end)
           for off, data in chunks:
-              buf[off:off+len(data)] = data
-          OUT.write_bytes(bytes(buf))
-          print(f"merged {OUT} -> {len(buf)} bytes (0x{end:X}), flash at 0x0")
+              buf[off:off + len(data)] = data
+          out = pathlib.Path("eink-mini-merged.bin")
+          out.write_bytes(bytes(buf))
+          print(f"merged {out} -> {len(buf)} bytes (0x{end:X}), flash at 0x0")
           PY
 
       - name: Package artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: eink-mini-firmware
@@ -70,3 +83,10 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/boot_app0.bin
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: firmware/build.log
