@@ -1,4 +1,4 @@
-"""各页面渲染：天气、月历、留言板。
+"""各页面渲染：天气、月历。
 
 页面内容用 PIL 画成 296x128 的灰度图，再转成设备 1bpp 帧。
 中文在这里渲染（设备零中文字库，只出 ASCII）。
@@ -91,33 +91,4 @@ def render_calendar(now=None):
                 d.text((x - tw // 2, y), txt, font=fnum, fill=255)
             else:
                 d.text((x - tw // 2, y), txt, font=fnum, fill=0)
-    return img
-
-
-def render_message(messages):
-    img = renderer.new_canvas()
-    d = ImageDraw.Draw(img)
-    renderer.draw_header(d, "留言板", "MESSAGE")
-
-    msgs = messages or []
-    if not msgs:
-        d.text((8, 48), "No messages yet", font=renderer.load_font(18), fill=0)
-        return img
-
-    fb = renderer.load_font(20, bold=True)
-    lines = renderer.wrap_text(d, msgs[0].get("text", ""), fb, W - 16)
-    y = 38
-    for line in lines[:3]:
-        d.text((8, y), line, font=fb, fill=0)
-        y += 24
-
-    d.line([(0, y + 3), (W, y + 3)], fill=0, width=1)
-
-    f = renderer.load_font(14)
-    yy = y + 9
-    for item in msgs[1:3]:
-        text = item.get("text", "")
-        one = renderer.wrap_text(d, text, f, W - 16)
-        d.text((8, yy), one[0] if one else "", font=f, fill=0)
-        yy += 19
     return img

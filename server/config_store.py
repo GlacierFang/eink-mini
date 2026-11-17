@@ -3,12 +3,10 @@
 配置项：
   city          天气城市名（默认 北京）
   lat / lon     城市坐标（改城市时重新地理编码）
-  write_token   留言写入令牌；为空 = 写入接口关闭
-  device_title  设备标题
+  device_title  屏上标题，显示在设备时钟页右上角（仅 ASCII）
 """
 
 import json
-import os
 import pathlib
 import threading
 
@@ -19,8 +17,7 @@ DEFAULTS = {
     "city": "北京",
     "lat": 39.9075,
     "lon": 116.39723,
-    "write_token": "",
-    "device_title": "EINK-MINI",
+    "device_title": "CLOCK",
 }
 
 _lock = threading.Lock()
@@ -36,10 +33,6 @@ def _read():
         for k, v in data.items():
             if k in merged:
                 merged[k] = v
-    # 环境变量优先于文件，方便部署时用 systemd Environment 注入令牌
-    env_token = os.environ.get("EINK_MINI_WRITE_TOKEN")
-    if env_token is not None:
-        merged["write_token"] = env_token
     return merged
 
 
@@ -52,7 +45,7 @@ def update_config(patch):
     with _lock:
         cur = _read()
         for k, v in patch.items():
-            if k in cur and k != "write_token":
+            if k in cur:
                 cur[k] = v
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(

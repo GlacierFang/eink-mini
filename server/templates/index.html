@@ -7,94 +7,122 @@
 <style>
   :root { color-scheme: light dark; }
   body { font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
-         margin: 0; padding: 24px; max-width: 900px; }
+         margin: 0; padding: 24px; max-width: 960px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { opacity: .65; font-size: 13px; margin-bottom: 20px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 10px; padding: 14px; }
-  .card h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .sub { opacity: .65; font-size: 13px; margin-bottom: 18px; }
+  h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 10px; padding: 14px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .grid .card { margin-bottom: 0; }
   img { width: 100%; image-rendering: pixelated; background: #fff; border: 1px solid rgba(128,128,128,.3); }
-  form { display: flex; gap: 8px; margin-top: 12px; }
-  input, textarea { font: inherit; padding: 8px; border: 1px solid rgba(128,128,128,.4);
-                    border-radius: 6px; background: transparent; color: inherit; width: 100%; }
+  .row { display: flex; gap: 8px; margin-top: 12px; }
+  input { font: inherit; padding: 8px; border: 1px solid rgba(128,128,128,.4);
+          border-radius: 6px; background: transparent; color: inherit; width: 100%; }
   button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 0;
-           background: #333; color: #fff; cursor: pointer; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .msg { margin-top: 8px; font-size: 13px; opacity: .8; }
-  ul { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
-  li { padding: 5px 0; border-bottom: 1px dashed rgba(128,128,128,.25); }
-  li .t { opacity: .55; font-size: 11px; }
-  .warn { background: rgba(255,180,0,.12); border: 1px solid rgba(255,180,0,.4);
-          padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 18px; }
+           background: #333; color: #fff; cursor: pointer; white-space: nowrap; }
+  .msg { margin-top: 8px; font-size: 13px; opacity: .8; min-height: 18px; }
+  .ok { color: #2e9e4f; } .bad { color: #c0392b; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+           border: 1px solid currentColor; vertical-align: 2px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; margin: 0; font-size: 13px; }
+  dt { opacity: .6; }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
   code { background: rgba(128,128,128,.15); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .native { font-size: 13px; opacity: .75; padding: 26px 0; text-align: center; }
 </style>
 </head>
 <body>
 <h1>eink-mini 控制台</h1>
 <div class="sub">2.9 寸黑白墨水屏 · 296x128 · 1bpp（1=黑，MSB first，4736 字节/帧）</div>
 
-{% if not write_enabled %}
-<div class="warn">写入接口已关闭。服务端配置 <code>write_token</code> 后可留言；
-环境变量 <code>EINK_MINI_WRITE_TOKEN</code> 也会生效。</div>
-{% endif %}
-
-<div class="card" style="margin-bottom:18px">
-  <h2>设备连接信息</h2>
-  <div style="font-size:13px;line-height:1.9">
-    服务端地址：<code>{{ config.get('city') and '' }}{{ request.host_url }}eink-mini/</code><br>
-    设备端配置：<code>host = ruohan.site</code> · <code>base = /eink-mini</code> · <code>port = 80</code><br>
-    清单：<code>{{ request.host_url }}eink-mini/api/manifest.json</code>
-  </div>
+<div class="card">
+  <h2>设备状态</h2>
+  <p style="margin:0 0 10px">
+    {% if device_online %}
+      <span class="badge ok">在线</span>
+    {% else %}
+      <span class="badge bad">离线</span>
+    {% endif %}
+  </p>
+  <dl>
+    <dt>最后活动</dt><dd>{{ device.last_seen or '设备还没拉取过' }}</dd>
+    <dt>最后请求</dt><dd>{{ device.last_endpoint or '-' }}</dd>
+    <dt>来源 IP</dt><dd>{{ device.ip or '-' }}</dd>
+    <dt>客户端</dt><dd>{{ device.user_agent or '-' }}</dd>
+    <dt>拉取次数</dt><dd>清单 {{ device.manifest_fetched or 0 }} 次 · 位图 {{ device.pages_fetched or 0 }} 次</dd>
+  </dl>
 </div>
 
 <div class="grid">
   {% for p in pages %}
   <div class="card">
     <h2>{{ p.title }} <span style="opacity:.5">({{ p.type }})</span></h2>
-    {% if p.type == 'message' %}
-    <img src="/preview/message.png?t={{ p.id }}" alt="message preview">
-    {% elif p.type == 'native' %}
-    <div style="font-size:13px;opacity:.75;padding:18px 0">设备本地渲染（翻页钟），不消耗服务端</div>
+    {% if p.type == 'native' %}
+      <div class="native">设备本地渲染（翻页钟），不消耗服务端</div>
     {% else %}
-    <img src="/preview/{{ p.id }}.png?t={{ p.id }}" alt="{{ p.id }} preview">
+      <img src="preview/{{ p.id }}.png" alt="{{ p.id }} preview">
     {% endif %}
   </div>
   {% endfor %}
 </div>
 
-<div class="card" style="margin-top:18px">
-  <h2>留言板</h2>
-  <form id="f">
-    <input id="token" type="password" placeholder="令牌（若已启用）" style="max-width:180px">
-    <input id="text" type="text" placeholder="写一句话推送到屏幕" maxlength="200" required>
-    <button type="submit" {% if not write_enabled %}disabled{% endif %}>发送</button>
-  </form>
-  <div class="msg" id="msg"></div>
-  <ul id="list">
-    {% for m in messages %}
-    <li>{{ m.text }}<div class="t">{{ m.created_at }}</div></li>
-    {% endfor %}
-  </ul>
+<div class="card" style="margin-top:16px">
+  <h2>功能配置</h2>
+
+  <h2 style="text-transform:none;letter-spacing:0;margin:0 0 4px">天气 · 城市</h2>
+  <div style="font-size:13px;opacity:.7;margin-bottom:8px">
+    当前：{{ config.city }}（{{ '%.4f' % config.lat }}, {{ '%.4f' % config.lon }}）
+  </div>
+  <div class="row">
+    <input id="city" type="text" placeholder="城市名，如 杭州 / 札幌" value="{{ config.city }}">
+    <button data-act="city">保存</button>
+  </div>
+  <div class="msg" id="city-msg"></div>
+
+  <h2 style="text-transform:none;letter-spacing:0;margin:18px 0 4px">时钟 · 屏幕标题</h2>
+  <div style="font-size:13px;opacity:.7;margin-bottom:8px">
+    显示在设备时钟页右上角。设备屏没有中文字库，只能用 ASCII。
+  </div>
+  <div class="row">
+    <input id="title" type="text" placeholder="ASCII, ≤16 字符" value="{{ config.device_title }}">
+    <button data-act="title">保存</button>
+  </div>
+  <div class="msg" id="title-msg"></div>
+</div>
+
+<div class="card">
+  <h2>设备连接信息</h2>
+  <div style="font-size:13px;line-height:1.9">
+    服务端地址：<code>{{ request.host_url }}eink-mini/</code><br>
+    设备端配置：<code>host = ruohan.site</code> · <code>base = /eink-mini</code> · <code>port = 80</code><br>
+    清单：<code>{{ request.host_url }}eink-mini/api/manifest.json</code>
+  </div>
 </div>
 
 <script>
-const tokenBox = document.getElementById('token');
-tokenBox.value = localStorage.getItem('eink_token') || '';
-tokenBox.addEventListener('change', () => localStorage.setItem('eink_token', tokenBox.value));
-document.getElementById('f').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const token = tokenBox.value.trim();
-  localStorage.setItem('eink_token', token);
-  const msg = document.getElementById('msg');
-  const r = await fetch('/api/message', {
+function save(act) {
+  const msg = document.getElementById(act + '-msg');
+  const field = act === 'city' ? 'city' : 'device_title';
+  const val = document.getElementById(field === 'city' ? 'city' : 'title').value.trim();
+  msg.textContent = '保存中…';
+  fetch('api/config', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-Token': token},
-    body: JSON.stringify({text: document.getElementById('text').value})
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[field]: val})
+  }).then(r => r.json().then(j => ({ok: r.ok, j}))).then(({ok, j}) => {
+    msg.className = 'msg ' + (ok ? 'ok' : 'bad');
+    msg.textContent = ok ? '已保存' : ('失败：' + (j.error || ''));
+    if (ok) setTimeout(() => location.reload(), 500);
+  }).catch(e => {
+    msg.className = 'msg bad';
+    msg.textContent = '失败：' + e;
   });
-  const j = await r.json().catch(() => ({}));
-  msg.textContent = r.ok ? ('已发送：' + (j.message && j.message.text || '')) : ('失败：' + (j.error || r.status));
-  if (r.ok) { document.getElementById('text').value = ''; setTimeout(() => location.reload(), 800); }
+}
+document.querySelectorAll('button[data-act]').forEach(b => {
+  b.addEventListener('click', () => save(b.dataset.act));
 });
+document.getElementById('city').addEventListener('keydown', e => { if (e.key === 'Enter') save('city'); });
+document.getElementById('title').addEventListener('keydown', e => { if (e.key === 'Enter') save('title'); });
 </script>
 </body>
 </html>

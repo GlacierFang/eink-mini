@@ -54,16 +54,6 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
   inkRenderPageFooter(c, pageIndex, pageCount, NULL);
 }
 
-void inkRenderMessagePage(InkCanvas& c, const char* line0, const char* line1, const char* line2)
-{
-  c.clear();
-  c.drawText(6, 4, "MESSAGE", true, 1);
-  c.hLine(0, 15, INK_W, true);
-
-  c.drawTextClipped(6, 22, INK_W - 12, line0 ? line0 : "", true, 2);
-  c.drawTextClipped(6, 52, INK_W - 12, line1 ? line1 : "", true, 1);
-  c.drawTextClipped(6, 70, INK_W - 12, line2 ? line2 : "", true, 1);
-}
 
 void inkRenderPageFooter(InkCanvas& c, int pageIndex, int pageCount, const char* label)
 {

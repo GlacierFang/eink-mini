@@ -94,13 +94,6 @@ static bool renderCurrentPage()
     return true;
   }
 
-  if (strcmp(curType, "message") == 0) {
-    char l0[128] = {0}, l1[128] = {0}, l2[128] = {0};
-    g_client.fetchMessage(l0, sizeof(l0), l1, sizeof(l1), l2, sizeof(l2));
-    inkRenderMessagePage(g_canvas, l0, l1, l2);
-    return true;
-  }
-
   // native 页：本地翻页钟
   uint32_t ep = g_net.epoch();
   inkRenderClockPage(g_canvas, ep, curTitle, g_pageIndex, g_pages.count);
@@ -213,7 +206,7 @@ void loop()
       g_display.push(g_canvas, false);
     }
   } else if (now - g_lastPageFetchMs > 30000UL) {
-    // bitmap / message 页：30 秒拉一次
+    // bitmap 页：30 秒拉一次
     g_lastPageFetchMs = now;
     if (renderCurrentPage()) {
       g_display.push(g_canvas, false);

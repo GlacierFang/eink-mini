@@ -1,6 +1,6 @@
 # eink-mini
 
-2.9 寸黑白电子墨水屏桌面终端：翻页时钟、天气、月历、留言板。
+2.9 寸黑白电子墨水屏桌面终端：翻页时钟、天气、月历。
 
 短按切换画面。设备只当哑终端——位图由配套服务端渲染，设备只负责显示。
 
@@ -95,8 +95,8 @@ firmware/src/
   ink_keys.*       A/B 键：短按、双击、长按
   ink_net.*        NVS、WiFi、SoftAP 配网页、SNTP 校时
   ink_json.*       最小 JSON 解析
-  ink_client.*     manifest / 位图页 / 消息接口
-  ink_pages.*      翻页钟、天气月历位图页、消息页
+  ink_client.*     manifest / 位图页
+  ink_pages.*      翻页钟、天气月历位图页
   main.cpp         设备状态机与页面调度
 firmware/tools/merge_bin.py   合并整片镜像
 firmware/lib/GxEPD2/          vendored GxEPD2 最小子集（见许可）
@@ -113,11 +113,11 @@ firmware/lib/GxEPD2/          vendored GxEPD2 最小子集（见许可）
 server/
   app.py            Flask 应用与路由
   renderer.py       1bpp 帧编码（296x128，MSB first，1=黑，4736 字节）
-  pages.py          天气 / 月历 / 留言板页面渲染
+  pages.py          天气 / 月历页面渲染
   weather.py        Open-Meteo 取数（10 分钟缓存，失败沿用上次结果）
-  store.py          留言存储（最近 50 条，JSON 落盘）
-  config_store.py   配置存储（城市、坐标、写入令牌）
-  templates/        Web UI
+  device_state.py   设备在线状态（最后活动、来源、计数，落盘）
+  config_store.py   配置存储（城市、坐标、屏幕标题）
+  templates/        控制台 Web UI
   tools/check_frame.py  位序自检：把 .bin 解回图验证 1=黑
 server/openclaw-eink-mini.service
 ```
@@ -128,23 +128,28 @@ server/openclaw-eink-mini.service
 |---|---|
 | GET /api/manifest.json | 页面清单：id、type、标题、顺序、版本（最多 12 页） |
 | GET /api/page/{id}.bin | 1bpp 帧，296x128，4736 字节 |
-| GET /api/message | 留言列表（字符串数组，最新在前） |
-| POST /api/message | 写留言（需 token，默认关闭） |
 
 浏览器侧：
 
 | 路径 | 用途 |
 |---|---|
-| GET / | Web UI（页面预览 + 留言板） |
+| GET / | 控制台（功能预览 + 配置 + 设备状态） |
 | GET /preview/{id}.png | 页面预览图 |
 | GET /api/config | 读配置 |
-| POST /api/config | 改城市 / 标题 |
+| POST /api/config | 改城市 / 屏幕标题 |
+| GET /api/device | 设备在线状态 |
 
-页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`bitmap` = 服务端下发位图，
-`message` = 消息页。当前四个页：clock（native）、weather、calendar、message。
+页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`bitmap` = 服务端下发位图。
+当前三个页：clock（native）、weather、calendar。
 
-写入令牌：服务端 `write_token` 非空时才允许写入，也可用环境变量 `EINK_MINI_WRITE_TOKEN` 注入。
-为空时 POST 一律 403。设备只说纯 HTTP，所以实例挂在 HTTP 路径前缀 `/eink-mini/` 下。
+清单里的 `version` 按页面内容算指纹：配置或日期变了才变，设备据此决定要不要重下位图。
+（早期版本用时间戳，导致设备每次轮询都认为页面全变，反复重下全部位图。）
+
+控制台分区：设备状态（在线 / 最后活动 / 来源 / 拉取次数）、各功能页面预览、
+功能配置（天气城市、时钟屏标题，标题限 ASCII —— 设备屏没有中文字库）。
+新增功能时，服务端多一个渲染页 → 清单多一页 → 控制台多一个分区，设备端不用改。
+
+设备只说纯 HTTP，所以实例挂在 HTTP 路径前缀 `/eink-mini/` 下。
 
 ## 许可
 

@@ -1,14 +1,15 @@
-"""eink-mini 服务端：页面清单 + 1bpp 位图 + 留言板。
+"""eink-mini 服务端：页面清单 + 1bpp 位图 + 设备状态。
 
 设备侧契约（与固件 ink_client.cpp 对齐）：
   GET  /api/manifest.json      页面清单，最多 12 页
   GET  /api/page/{id}.bin      1bpp 帧，296x128，4736 字节
-  GET  /api/message            留言，字符串数组（最新在前）
-  POST /api/message            写留言（需要 token，默认关闭）
 
 浏览器侧：
-  GET  /                       Web UI
+  GET  /                       控制台（功能分区：预览 + 配置 + 设备状态）
   GET  /preview/{id}.png       页面预览图
+  GET  /api/config             读取配置
+  POST /api/config             改配置
+  GET  /api/device             设备在线状态
 """
 
 import json
@@ -18,20 +19,19 @@ from datetime import datetime
 from flask import Flask, Response, jsonify, render_template, request
 
 import config_store
+import device_state
 import pages
 import renderer
-import store
 import weather
 
 app = Flask(__name__)
 
-# 页面注册表：id、type（native/bitmap/message）、标题
-# type 的含义由固件决定：native=设备本地渲染，bitmap=服务端下发位图，message=消息页
+# 页面注册表：id、type、标题
+# type 的含义由固件决定：native=设备本地渲染，bitmap=服务端下发位图
 PAGES = [
     {"id": "clock", "type": "native", "title": "CLOCK"},
     {"id": "weather", "type": "bitmap", "title": "WEATHER"},
     {"id": "calendar", "type": "bitmap", "title": "CALENDAR"},
-    {"id": "message", "type": "message", "title": "MESSAGE"},
 ]
 
 MAX_PAGES = 12
@@ -93,12 +93,13 @@ def no_cache(resp):
 @app.route("/")
 def index():
     cfg = config_store.get_config()
+    state = device_state.get_state()
     return render_template(
         "index.html",
         pages=PAGES,
         config=cfg,
-        write_enabled=bool(cfg.get("write_token")),
-        messages=store.list_messages(20),
+        device=state,
+        device_online=device_state.is_online(state),
     )
 
 
@@ -109,24 +110,67 @@ def health():
 
 @app.route("/api/manifest.json")
 def manifest():
+    # 设备靠 version 判断页面是否变了，所以 version 必须跟着内容走，
+    # 不能用时间戳——那样每次请求都变，设备会反复重下所有位图。
+    cfg = config_store.get_config()
     pages_out = []
     for i, p in enumerate(PAGES[:MAX_PAGES]):
+        # native 页由设备本地渲染，标题直接用配置里的 device_title，
+        # 这样控制台改标题才会真的出现在屏上
+        title = p["title"]
+        if p["type"] == "native":
+            title = cfg.get("device_title") or p["title"]
         pages_out.append(
             {
                 "id": p["id"],
                 "type": p["type"],
-                "title": p["title"],
+                "title": title,
                 "order": i,
-                "version": int(datetime.now().timestamp()),
+                "version": _page_version(p["id"]),
             }
         )
-    return jsonify(
+    resp = jsonify(
         {
-            "version": 1,
+            "version": _manifest_version(),
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "pages": pages_out,
         }
     )
+    device_state.record(
+        "manifest.json",
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
+    return resp
+
+
+def _page_version(page_id):
+    """页面内容指纹：内容不变则版本不变。
+
+    只用便宜的输入算，绝不在这里渲染页面——渲染天气页会触发实时天气请求，
+    会把清单接口阻塞住。版本号的作用是让设备知道"要不要重下这张图"，
+    配置和日期变了才算变了，够用。
+    """
+    import hashlib
+
+    entry = _page_entry(page_id)
+    if not entry:
+        return 0
+    cfg = config_store.get_config()
+    if page_id == "weather":
+        seed = "weather|%s|%.4f|%.4f" % (cfg["city"], cfg["lat"], cfg["lon"])
+    elif page_id == "calendar":
+        seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
+    else:
+        seed = "clock|%s" % cfg.get("device_title", "")
+    return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _manifest_version():
+    import hashlib
+
+    payload = json.dumps([_page_version(p["id"]) for p in PAGES], sort_keys=True)
+    return int(hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8], 16)
 
 
 @app.route("/api/page/<page_id>.bin")
@@ -143,6 +187,11 @@ def page_bin(page_id):
     data = renderer.image_to_1bpp(img)
     resp = Response(data, mimetype="application/octet-stream")
     resp.headers["Content-Length"] = str(len(data))
+    device_state.record(
+        "page/" + page_id + ".bin",
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
     return resp
 
 
@@ -151,90 +200,55 @@ def preview_png(page_id):
     entry = _page_entry(page_id)
     if not entry:
         return Response(status=404)
-    if entry["type"] == "message":
-        img = pages.render_message(store.list_messages(3))
-    else:
-        try:
-            img = render_page(page_id)
-        except KeyError:
-            return Response(status=404)
+    try:
+        img = render_page(page_id)
+    except KeyError:
+        return Response(status=404)
     return Response(renderer.image_to_png(img), mimetype="image/png")
-
-
-@app.route("/api/message")
-def get_message():
-    # 固件 collectStrings 期望字符串数组：最新一条在前
-    msgs = store.list_messages(3)
-    return jsonify([m.get("text", "") for m in msgs])
-
-
-@app.route("/api/messages")
-def list_messages():
-    return jsonify(store.list_messages(50))
-
-
-def _write_authorized():
-    cfg = config_store.get_config()
-    token = cfg.get("write_token") or ""
-    if not token:
-        return False, "写入接口未启用（服务端未配置 write_token）"
-    given = request.headers.get("X-Token") or request.args.get("token") or ""
-    if given != token:
-        return False, "令牌不正确"
-    return True, ""
-
-
-@app.route("/api/message", methods=["POST"])
-def post_message():
-    ok, why = _write_authorized()
-    if not ok:
-        return jsonify({"ok": False, "error": why}), 403
-    data = request.get_json(silent=True) or request.form or {}
-    text = (data.get("text") or data.get("message") or "").strip()
-    if not text:
-        return jsonify({"ok": False, "error": "内容为空"}), 400
-    item = store.add_message(text)
-    return jsonify({"ok": True, "message": item})
-
-
-@app.route("/api/messages", methods=["DELETE"])
-def delete_messages():
-    ok, why = _write_authorized()
-    if not ok:
-        return jsonify({"ok": False, "error": why}), 403
-    store.clear_messages()
-    return jsonify({"ok": True})
 
 
 @app.route("/api/config", methods=["GET"])
 def get_cfg():
-    cfg = config_store.get_config()
-    # 不把令牌明文吐出去
-    cfg = dict(cfg)
-    cfg["write_token"] = "***" if cfg.get("write_token") else ""
-    cfg["write_enabled"] = bool(config_store.get_config().get("write_token"))
-    return jsonify(cfg)
+    return jsonify(config_store.get_config())
 
 
 @app.route("/api/config", methods=["POST"])
 def set_cfg():
-    ok, why = _write_authorized()
-    if not ok:
-        return jsonify({"ok": False, "error": why}), 403
     data = request.get_json(silent=True) or {}
     patch = {}
     if "city" in data:
         city = str(data["city"]).strip()
+        if not city:
+            return jsonify({"ok": False, "error": "城市不能为空"}), 400
         hit = weather.geocode(city)
-        if hit:
-            patch["city"] = city
-            patch["lat"] = hit[0]
-            patch["lon"] = hit[1]
+        if not hit:
+            return jsonify({"ok": False, "error": "查不到这个城市：" + city}), 400
+        patch["city"] = city
+        patch["lat"] = hit[0]
+        patch["lon"] = hit[1]
     if "device_title" in data:
-        patch["device_title"] = str(data["device_title"]).strip()[:32]
+        title = str(data["device_title"]).strip()
+        if not title:
+            return jsonify({"ok": False, "error": "标题不能为空"}), 400
+        # 设备屏上没有中文字库，标题只能是 ASCII
+        if not title.isascii():
+            return jsonify({"ok": False, "error": "标题只能用 ASCII（设备屏无中文字库）"}), 400
+        patch["device_title"] = title[:16]
     if not patch:
         return jsonify({"ok": False, "error": "没有可更新的字段"}), 400
     return jsonify({"ok": True, "config": config_store.update_config(patch)})
+
+
+@app.route("/api/device")
+def api_device():
+    state = device_state.get_state()
+    return jsonify(
+        {
+            "online": device_state.is_online(state),
+            "state": state,
+            "pages": [p["id"] for p in PAGES],
+        }
+    )
 
 
 if __name__ == "__main__":
