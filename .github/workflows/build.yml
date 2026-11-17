@@ -1,0 +1,72 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade platformio
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/.pio
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+
+      - name: Build firmware
+        working-directory: firmware
+        run: pio run
+
+      - name: Merge binary
+        working-directory: firmware/.pio/build/esp32-c3-pro-mini
+        run: |
+          python - <<'PY'
+          import pathlib
+          OUT = pathlib.Path("eink-mini-merged.bin")
+          parts = [
+              (0x0,      pathlib.Path("bootloader.bin")),
+              (0x8000,   pathlib.Path("partitions.bin")),
+              (0xE000,   pathlib.Path("boot_app0.bin")),
+              (0x10000,  pathlib.Path("firmware.bin")),
+          ]
+          end = 0
+          chunks = []
+          for off, p in parts:
+              data = p.read_bytes()
+              chunks.append((off, data))
+              end = max(end, off + len(data))
+          buf = bytearray(b"ÿ" * end)
+          for off, data in chunks:
+              buf[off:off+len(data)] = data
+          OUT.write_bytes(bytes(buf))
+          print(f"merged {OUT} -> {len(buf)} bytes (0x{end:X}), flash at 0x0")
+          PY
+
+      - name: Package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eink-mini-firmware
+          path: |
+            firmware/.pio/build/esp32-c3-pro-mini/bootloader.bin
+            firmware/.pio/build/esp32-c3-pro-mini/partitions.bin
+            firmware/.pio/build/esp32-c3-pro-mini/boot_app0.bin
+            firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
+            firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
