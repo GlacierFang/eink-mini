@@ -1,0 +1,16 @@
+[Unit]
+Description=eink-mini 服务端（墨水屏页面下发 + 留言板）
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/open/.openclaw/workspace/eink-mini/server
+ExecStart=/usr/bin/python3 app.py
+Restart=always
+RestartSec=5
+Environment=EINK_MINI_PORT=18842
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

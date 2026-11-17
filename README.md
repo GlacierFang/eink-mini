@@ -10,7 +10,7 @@
 >
 > 🟡 **还没上过真机**。接线、B 键 GPIO、旋转方向、BUSY 极性都要实物核对。
 >
-> ⛔ **配套服务端与 Web UI 还没做**。设备拉不到页面时回退到本地时钟页。
+> 🟢 **配套服务端已上线**：`http://ruohan.site/eink-mini/`（后端 18842，nginx 路由 `/eink-mini/`）。
 >
 > 🔒 **编译不会自动跑**。GitHub Actions 手动触发（`workflow_dispatch`），要编译时自己点一下。
 
@@ -105,19 +105,46 @@ firmware/lib/GxEPD2/          vendored GxEPD2 最小子集（见许可）
 位图协议：1bpp，MSB first，bit 1 表示黑，行跨度 37 字节，每帧 4736 字节。
 局刷窗口按 8 像素对齐，完整旧帧写 RAM2、完整新帧写 RAM，再刷脏区窗口。
 
-## 配套服务端（还没做）
+## 配套服务端
 
-设备从配套服务端拉 1bpp 帧：
+已上线：`http://ruohan.site/eink-mini/`（Flask + gunicorn，后端端口 18842，user scope systemd）。
+
+```
+server/
+  app.py            Flask 应用与路由
+  renderer.py       1bpp 帧编码（296x128，MSB first，1=黑，4736 字节）
+  pages.py          天气 / 月历 / 留言板页面渲染
+  weather.py        Open-Meteo 取数（10 分钟缓存，失败沿用上次结果）
+  store.py          留言存储（最近 50 条，JSON 落盘）
+  config_store.py   配置存储（城市、坐标、写入令牌）
+  templates/        Web UI
+  tools/check_frame.py  位序自检：把 .bin 解回图验证 1=黑
+server/openclaw-eink-mini.service
+```
+
+设备侧接口：
 
 | 路径 | 用途 |
 |---|---|
-| GET /api/manifest.json | 页面清单：id、标题、类型、顺序、版本（最多 12 页） |
+| GET /api/manifest.json | 页面清单：id、type、标题、顺序、版本（最多 12 页） |
 | GET /api/page/{id}.bin | 1bpp 帧，296x128，4736 字节 |
-| GET /preview/{id}.png | 给人看的预览图 |
-| GET /api/message | 写入入口：往屏幕推一条消息 |
-| GET / | Web UI |
+| GET /api/message | 留言列表（字符串数组，最新在前） |
+| POST /api/message | 写留言（需 token，默认关闭） |
 
-设备只说纯 HTTP，所以自部署实例需要挂一个 HTTP 路径前缀。
+浏览器侧：
+
+| 路径 | 用途 |
+|---|---|
+| GET / | Web UI（页面预览 + 留言板） |
+| GET /preview/{id}.png | 页面预览图 |
+| GET /api/config | 读配置 |
+| POST /api/config | 改城市 / 标题 |
+
+页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`bitmap` = 服务端下发位图，
+`message` = 消息页。当前四个页：clock（native）、weather、calendar、message。
+
+写入令牌：服务端 `write_token` 非空时才允许写入，也可用环境变量 `EINK_MINI_WRITE_TOKEN` 注入。
+为空时 POST 一律 403。设备只说纯 HTTP，所以实例挂在 HTTP 路径前缀 `/eink-mini/` 下。
 
 ## 许可
 

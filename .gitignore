@@ -1,8 +1,5 @@
-.pio/
-.vscode/
-.idea/
-__pycache__/
+# 服务端运行时数据（配置、留言）
+server/data/
 *.pyc
-build/
-dist/
-*.log
+__pycache__/
+firmware/.pio/

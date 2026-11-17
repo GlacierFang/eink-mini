@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>eink-mini 控制台</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Noto Sans CJK SC", sans-serif;
+         margin: 0; padding: 24px; max-width: 900px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { opacity: .65; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .card { border: 1px solid rgba(128,128,128,.35); border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; text-transform: uppercase; letter-spacing: .06em; }
+  img { width: 100%; image-rendering: pixelated; background: #fff; border: 1px solid rgba(128,128,128,.3); }
+  form { display: flex; gap: 8px; margin-top: 12px; }
+  input, textarea { font: inherit; padding: 8px; border: 1px solid rgba(128,128,128,.4);
+                    border-radius: 6px; background: transparent; color: inherit; width: 100%; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 0;
+           background: #333; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .msg { margin-top: 8px; font-size: 13px; opacity: .8; }
+  ul { list-style: none; padding: 0; margin: 8px 0 0; font-size: 13px; }
+  li { padding: 5px 0; border-bottom: 1px dashed rgba(128,128,128,.25); }
+  li .t { opacity: .55; font-size: 11px; }
+  .warn { background: rgba(255,180,0,.12); border: 1px solid rgba(255,180,0,.4);
+          padding: 10px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 18px; }
+  code { background: rgba(128,128,128,.15); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>eink-mini 控制台</h1>
+<div class="sub">2.9 寸黑白墨水屏 · 296x128 · 1bpp（1=黑，MSB first，4736 字节/帧）</div>
+
+{% if not write_enabled %}
+<div class="warn">写入接口已关闭。服务端配置 <code>write_token</code> 后可留言；
+环境变量 <code>EINK_MINI_WRITE_TOKEN</code> 也会生效。</div>
+{% endif %}
+
+<div class="card" style="margin-bottom:18px">
+  <h2>设备连接信息</h2>
+  <div style="font-size:13px;line-height:1.9">
+    服务端地址：<code>{{ config.get('city') and '' }}{{ request.host_url }}eink-mini/</code><br>
+    设备端配置：<code>host = ruohan.site</code> · <code>base = /eink-mini</code> · <code>port = 80</code><br>
+    清单：<code>{{ request.host_url }}eink-mini/api/manifest.json</code>
+  </div>
+</div>
+
+<div class="grid">
+  {% for p in pages %}
+  <div class="card">
+    <h2>{{ p.title }} <span style="opacity:.5">({{ p.type }})</span></h2>
+    {% if p.type == 'message' %}
+    <img src="/preview/message.png?t={{ p.id }}" alt="message preview">
+    {% elif p.type == 'native' %}
+    <div style="font-size:13px;opacity:.75;padding:18px 0">设备本地渲染（翻页钟），不消耗服务端</div>
+    {% else %}
+    <img src="/preview/{{ p.id }}.png?t={{ p.id }}" alt="{{ p.id }} preview">
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card" style="margin-top:18px">
+  <h2>留言板</h2>
+  <form id="f">
+    <input id="token" type="password" placeholder="令牌（若已启用）" style="max-width:180px">
+    <input id="text" type="text" placeholder="写一句话推送到屏幕" maxlength="200" required>
+    <button type="submit" {% if not write_enabled %}disabled{% endif %}>发送</button>
+  </form>
+  <div class="msg" id="msg"></div>
+  <ul id="list">
+    {% for m in messages %}
+    <li>{{ m.text }}<div class="t">{{ m.created_at }}</div></li>
+    {% endfor %}
+  </ul>
+</div>
+
+<script>
+const tokenBox = document.getElementById('token');
+tokenBox.value = localStorage.getItem('eink_token') || '';
+tokenBox.addEventListener('change', () => localStorage.setItem('eink_token', tokenBox.value));
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const token = tokenBox.value.trim();
+  localStorage.setItem('eink_token', token);
+  const msg = document.getElementById('msg');
+  const r = await fetch('/api/message', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Token': token},
+    body: JSON.stringify({text: document.getElementById('text').value})
+  });
+  const j = await r.json().catch(() => ({}));
+  msg.textContent = r.ok ? ('已发送：' + (j.message && j.message.text || '')) : ('失败：' + (j.error || r.status));
+  if (r.ok) { document.getElementById('text').value = ''; setTimeout(() => location.reload(), 800); }
+});
+</script>
+</body>
+</html>
