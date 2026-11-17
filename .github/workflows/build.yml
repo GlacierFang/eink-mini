@@ -75,7 +75,7 @@ jobs:
               data = p.read_bytes()
               chunks.append((off, data))
               end = max(end, off + len(data))
-          buf = bytearray(b"\xff" * end)
+          buf = bytearray(b"ÿ" * end)
           for off, data in chunks:
               buf[off:off + len(data)] = data
           out = pathlib.Path("eink-mini-merged.bin")
