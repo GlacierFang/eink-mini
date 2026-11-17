@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 #include "ink_config.h"
 
 // 业务画布：296x128，1bpp，行主序，每行 37 字节。

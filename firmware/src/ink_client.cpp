@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static InkNet* g_net = nullptr;
 void inkClientBindNet(InkNet* n) { g_net = n; }
@@ -27,12 +28,19 @@ size_t InkClient::fetchText(const char* path, uint8_t* dst, size_t dstLen)
   if (code == 200) {
     WiFiClient* stream = http.getStreamPtr();
     unsigned long t0 = millis();
-    while (http.connected() && got < dstLen && millis() - t0 < INK_HTTP_TIMEOUT_MS) {
+    unsigned long lastData = t0;
+    while (got < dstLen && millis() - t0 < INK_HTTP_TIMEOUT_MS) {
       size_t avail = stream->available();
-      if (avail == 0) { delay(5); continue; }
+      if (avail == 0) {
+        // 服务端可能已发完但保持连接：空闲 500ms 视为传输结束
+        if (millis() - lastData > 500) break;
+        delay(5);
+        continue;
+      }
       size_t n = stream->readBytes(dst + got, (avail > (dstLen - got)) ? (dstLen - got) : avail);
       if (n == 0) break;
       got += n;
+      lastData = millis();
     }
   } else {
     Serial.printf("[http] %s -> %d\n", url, code);

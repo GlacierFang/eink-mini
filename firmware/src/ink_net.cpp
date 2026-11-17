@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <time.h>
@@ -34,14 +35,22 @@ static String nvsGetStr(const char* key, const char* def = "")
   return v;
 }
 
+// 把 NVS 里的字符串安全地拷进定长缓冲
+static void copyStr(char* dst, size_t dstLen, const String& src)
+{
+  if (!dst || dstLen == 0) return;
+  strncpy(dst, src.c_str(), dstLen - 1);
+  dst[dstLen - 1] = 0;
+}
+
 bool InkNet::loadConfig()
 {
-  ssid_ = nvsGetStr("ssid").c_str();
-  pass_ = nvsGetStr("pass").c_str();
-  host_ = nvsGetStr("host", INK_DEFAULT_HOST).c_str();
-  base_ = nvsGetStr("base", INK_DEFAULT_BASE).c_str();
-  if (host_[0] == 0) strncpy(host_, INK_DEFAULT_HOST, sizeof(host_) - 1);
-  if (base_[0] == 0) strncpy(base_, INK_DEFAULT_BASE, sizeof(base_) - 1);
+  copyStr(ssid_, sizeof(ssid_), nvsGetStr("ssid"));
+  copyStr(pass_, sizeof(pass_), nvsGetStr("pass"));
+  copyStr(host_, sizeof(host_), nvsGetStr("host", INK_DEFAULT_HOST));
+  copyStr(base_, sizeof(base_), nvsGetStr("base", INK_DEFAULT_BASE));
+  if (host_[0] == 0) copyStr(host_, sizeof(host_), String(INK_DEFAULT_HOST));
+  if (base_[0] == 0) copyStr(base_, sizeof(base_), String(INK_DEFAULT_BASE));
   haveConfig_ = (ssid_[0] != 0);
   return haveConfig_;
 }
@@ -55,10 +64,20 @@ void InkNet::saveConfig()
   haveConfig_ = (ssid_[0] != 0);
 }
 
+// 供配网页提交时写入
+void InkNet::saveNetwork(const char* ssid, const char* pass)
+{
+  copyStr(ssid_, sizeof(ssid_), String(ssid ? ssid : ""));
+  copyStr(pass_, sizeof(pass_), String(pass ? pass : ""));
+  nvsSetStr("ssid", ssid_);
+  nvsSetStr("pass", pass_);
+  haveConfig_ = (ssid_[0] != 0);
+}
+
 void InkNet::saveServer(const char* host, const char* base)
 {
-  if (host && host[0]) strncpy(host_, host, sizeof(host_) - 1);
-  if (base && base[0]) strncpy(base_, base, sizeof(base_) - 1);
+  if (host && host[0]) copyStr(host_, sizeof(host_), String(host));
+  if (base && base[0]) copyStr(base_, sizeof(base_), String(base));
   nvsSetStr("host", host_);
   nvsSetStr("base", base_);
 }

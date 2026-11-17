@@ -27,6 +27,7 @@ public:
   void makeUrl(const char* path, char* out, size_t outLen);
 
   void saveServer(const char* host, const char* base);
+  void saveNetwork(const char* ssid, const char* pass);
 
 private:
   bool loadConfig();

@@ -95,6 +95,26 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/firmware.bin
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
 
+      - name: 把构建日志发布到 ci-logs 分支
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        working-directory: firmware
+        run: |
+          set +e
+          if ! gh api "repos/$REPO/git/ref/heads/ci-logs" >/dev/null 2>&1; then
+            MAIN_SHA=$(gh api "repos/$REPO/git/ref/heads/main" --jq ".object.sha")
+            gh api --method POST "repos/$REPO/git/refs" -f ref="refs/heads/ci-logs" -f sha="$MAIN_SHA" >/dev/null 2>&1
+          fi
+          B64=$(base64 -w0 build.log 2>/dev/null)
+          gh api --method PUT "repos/$REPO/contents/ci/build-$SHA.log" \
+            -f message="ci: build log $SHA" \
+            -f content="$B64" \
+            -f branch=ci-logs
+          echo "日志已发布到 ci-logs 分支"
+
       - name: 失败时把构建日志写进 issue
         if: failure()
         env:

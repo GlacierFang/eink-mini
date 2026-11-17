@@ -37,7 +37,6 @@ private:
   bool detectDirty(int& px, int& py, int& pw, int& ph) const;
   bool writeFullFrame(const uint8_t* frame);
   bool writePartialFrame(const uint8_t* frame, int px, int py, int pw, int ph);
-  void* panel_ = nullptr;
   int   busyLevel_ = -2;          // -2=未探测，-1=延时模式，0/1=实测极性
   bool  havePrev_ = false;
   uint32_t lastFullMs_ = 0;

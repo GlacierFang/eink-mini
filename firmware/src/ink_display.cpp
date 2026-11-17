@@ -41,12 +41,18 @@ void busySamplerTask(void* arg)
 // 把探测出来的极性传给基类，从而真正做到"不写死"。
 class InkEPD : public GxEPD2_290 {
 public:
-  InkEPD(int16_t cs, int16_t dc, int16_t rst, int16_t busy, int16_t busy_level,
-         uint32_t busy_timeout_ms)
-    : GxEPD2_EPD(cs, dc, rst, busy, busy_level, busy_timeout_ms * 1000UL,
-                 GxEPD2_290::WIDTH, GxEPD2_290::HEIGHT, GxEPD2_290::panel,
-                 GxEPD2_290::hasColor, GxEPD2_290::hasPartialUpdate,
-                 GxEPD2_290::hasFastPartialUpdate) {}
+  InkEPD(int16_t cs, int16_t dc, int16_t rst, int16_t busy)
+    : GxEPD2_290(cs, dc, rst, busy) {}
+
+  // GxEPD2_290 的构造函数把 BUSY 极性写死成 HIGH、超时写死 10 秒，
+  // 而驱动板的 BUSY 极性不固定，必须可配。
+  // GxEPD2_EPD 把 _busy_level / _busy_timeout 声明为 protected，
+  // 所以构造完成后可以在这里改写。
+  void applyBusy(int16_t busy_level, uint32_t busy_timeout_ms)
+  {
+    _busy_level = busy_level;
+    _busy_timeout = busy_timeout_ms * 1000UL;   // 基类按微秒比较
+  }
 };
 
 static InkEPD* g_panel = nullptr;
@@ -58,9 +64,9 @@ static InkEPD* g_panel = nullptr;
 static inline int inkPanelX(int y) { return INK_PANEL_W - 1 - y; }
 static inline int inkPanelY(int x) { return x; }
 #else
-// 逆时针 90 度：px = y, py = 127 - x
+// 逆时针 90 度：px = y, py = 295 - x
 static inline int inkPanelX(int y) { return y; }
-static inline int inkPanelY(int x) { return INK_PANEL_W - 1 - x; }
+static inline int inkPanelY(int x) { return INK_PANEL_H - 1 - x; }
 #endif
 
 bool InkDisplay::buildPanelFrame(const InkCanvas& c, uint8_t* out) const
@@ -129,13 +135,16 @@ bool InkDisplay::writeFullFrame(const uint8_t* frame)
 bool InkDisplay::writePartialFrame(const uint8_t* frame, int px, int py, int pw, int ph)
 {
   if (!g_panel) return false;
-  // 用 writeImagePart 直接从整帧里取子区域，省掉一次拷贝
-  g_panel->writeImagePart(frame, px, py, INK_PANEL_W, INK_PANEL_H, px, py, pw, ph);
-  g_panel->writeImagePartToPrevious(prevFrame_, px, py, INK_PANEL_W, INK_PANEL_H, px, py, pw, ph);
+  // 差分刷新需要两个 RAM 都有正确内容：
+  //   RAM2 (0x26) = 旧帧，也就是屏幕上现在的内容
+  //   RAM  (0x24) = 新帧
+  // 控制器在刷新窗口内逐像素比对这两个 RAM，只有不同的像素才会被更新。
+  // 所以窗口外的像素必须保持一致，否则会出现整屏闪烁。
+  //
+  // 整帧 4736 字节，4MHz SPI 下约 19ms，相对 420ms 的刷新时间可以忽略。
+  g_panel->writeImageToPrevious(prevFrame_, 0, 0, INK_PANEL_W, INK_PANEL_H);
+  g_panel->writeImage(frame, 0, 0, INK_PANEL_W, INK_PANEL_H);
   g_panel->refresh(px, py, pw, ph);
-  // 刷新完成：把 RAM2 的同一窗口同步成新内容，保证 RAM2 与 RAM 处处相等，
-  // 否则下一次差分刷新时控制器会认为窗口外也变了，把窗口外一起刷一遍。
-  g_panel->writeImagePartToPrevious(frame, px, py, INK_PANEL_W, INK_PANEL_H, px, py, pw, ph);
   return true;
 }
 
@@ -170,13 +179,15 @@ bool InkDisplay::begin()
   uint8_t idle = (uint8_t)digitalRead(INK_PIN_BUSY);
   g_busySample = idle;
 
-  xTaskHandle_t task = NULL;
+  TaskHandle_t task = NULL;
   xTaskCreate(busySamplerTask, "busySamp", 2048, NULL, 1, &task);
 
   // 先用"忙=高"试一次（多数驱动板是这个极性）
   if (g_panel) delete g_panel;
   // 探测阶段用 3 秒超时：万一极性猜错，最多等 3 秒而不是 10 秒
-  g_panel = new InkEPD(INK_PIN_CS, INK_PIN_DC, INK_PIN_RST, INK_PIN_BUSY, HIGH, 3000);
+  g_panel = new InkEPD(INK_PIN_CS, INK_PIN_DC, INK_PIN_RST, INK_PIN_BUSY);
+  // 探测阶段用 3 秒超时：万一极性猜错，最多等 3 秒而不是 10 秒
+  g_panel->applyBusy(HIGH, 3000);
   g_panel->init(115200, true, 10, false);
   g_panel->clearScreen(0xFF);
 
@@ -190,8 +201,8 @@ bool InkDisplay::begin()
 
   g_busyRunning = 0;
   if (task) {
-    vTaskDelay(20);
-    if (g_busyRunning == 0) { /* 任务自行退出 */ }
+    // 等采样任务自己收尾退出
+    vTaskDelay(50);
   }
 
   if (g_busyHaveDiff) {
@@ -203,9 +214,8 @@ bool InkDisplay::begin()
   // 用探测出来的极性重建面板实例
   if (g_panel) delete g_panel;
   g_panel = new InkEPD(INK_PIN_CS, INK_PIN_DC, INK_PIN_RST,
-                       (busyLevel_ < 0) ? -1 : INK_PIN_BUSY,
-                       busyLevel_ < 0 ? HIGH : busyLevel_,
-                       10000);
+                       (busyLevel_ < 0) ? -1 : INK_PIN_BUSY);
+  g_panel->applyBusy(busyLevel_ < 0 ? HIGH : busyLevel_, 10000);
   g_panel->init(115200, true, 10, false);
   g_panel->clearScreen(0xFF);
 
