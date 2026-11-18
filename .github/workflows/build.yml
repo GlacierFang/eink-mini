@@ -2,6 +2,11 @@ name: 编译固件
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release 标签（留空则用 fw-<短SHA>）'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -171,6 +176,47 @@ jobs:
           fi
           git push origin "$COMMIT:refs/heads/$BRANCH"
           echo "固件已推到 $BRANCH"
+
+      # 建 GitHub Release，.bin 直接挂成附件。
+      #
+      # **必须在 CI 里做，不能在本机做**：附件上传走 uploads.github.com，
+      # 而本机出口代理的白名单里没有这个域名，会被挡成 403；
+      # gh release create 上传失败还会把整个 release 撤掉（tag 也一起没了）。
+      # CI 跑在 GitHub 自己的 runner 上，不经过本机代理。
+      - name: 建 GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+        working-directory: firmware
+        run: |
+          set -e
+          B=.pio/build/esp32-c3-pro-mini
+          TAG="$INPUT_TAG"
+          if [ -z "$TAG" ]; then
+            TAG="fw-${SHA:0:8}"
+          fi
+          # 同名 release 已存在就跳过，不覆盖历史发布。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，跳过"
+            exit 0
+          fi
+          cp tools/release_notes.md notes.md
+          printf '\n对应提交：`%s`\n' "$SHA" >> notes.md
+          (cd "$B" && sha256sum bootloader.bin partitions.bin boot_app0.bin firmware.bin eink-mini-merged.bin flash_args.txt > SHA256SUMS)
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --title "eink-mini 固件 $TAG" \
+            --notes-file notes.md \
+            "$B/bootloader.bin" \
+            "$B/partitions.bin" \
+            "$B/boot_app0.bin" \
+            "$B/firmware.bin" \
+            "$B/eink-mini-merged.bin" \
+            "$B/flash_args.txt" \
+            "$B/SHA256SUMS"
+          echo "Release $TAG 已发布"
 
       - name: 上传构建日志
         if: always()

@@ -224,15 +224,16 @@ firmware/tools/render_host.sh [输出目录]     # 默认 ../tmp-preview
 
 ## 编译（GitHub Actions，手动触发）
 
-Actions 里点 **Run workflow** 手动触发。产物两处都能拿：
+Actions 里点 **Run workflow** 手动触发。产物三处都能拿：
 
+- **Releases**（推荐）：Releases 页面直接下 .bin 附件，每次编译一个版本，带改动说明和校验和。
 - **Artifacts**：`eink-mini-firmware`（国内网络常常下不动）
-- **`fw-bin` 分支**（推荐，国内可走 git）：
+- **`fw-bin` 分支**（国内可走 git）：
   ```bash
   git clone --depth 1 --branch fw-bin git@github.com:GlacierFang/eink-mini.git
   ```
 
-产物清单：
+产物清单（Releases 里附同名文件，另有 `SHA256SUMS` 校验和）：
 
 | 文件 | 烧录地址 | 说明 |
 |---|---|---|
