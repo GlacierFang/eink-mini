@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import config_store
 import device_state
+import native_render
 import pages
 import renderer
 import weather
@@ -160,6 +161,11 @@ def index():
                 ],
             }
         )
+    native_meta = {
+        p["id"]: native_render.get_meta(p["id"])
+        for p in PAGES
+        if p["type"] in ("native", "timer")
+    }
     return render_template(
         "index.html",
         features=features,
@@ -168,7 +174,29 @@ def index():
         device_online=device_state.is_online(state),
         weather=w,
         weather_at=weather.get_weather_at(),
+        native_meta=native_meta,
     )
+
+
+def _native_preview(page_id):
+    """native 页（时钟 / 计时器）的预览。
+
+    走后台线程的落盘缓存 —— 请求里不编译、不跑子进程。
+    """
+    state = request.args.get("state")
+    if state:
+        # 临时态：按需渲染，不落缓存（只有点那几个状态链接时才走）
+        try:
+            img = native_render.render_timer_state(state)
+        except KeyError:
+            return Response(status=404)
+        except Exception:
+            return Response(status=503)
+        return Response(renderer.image_to_png(img), mimetype="image/png")
+    png = native_render.get_preview_png(page_id)
+    if not png:
+        return Response(status=503)
+    return Response(png, mimetype="image/png")
 
 
 @app.route("/api/health")
@@ -267,6 +295,8 @@ def preview_png(page_id):
     entry = _page_entry(page_id)
     if not entry:
         return Response(status=404)
+    if entry["type"] in ("native", "timer"):
+        return _native_preview(page_id)
     try:
         crisp, icon_specs = render_page(page_id)
     except KeyError:
@@ -340,6 +370,9 @@ def api_device():
 
 # 天气后台取数线程。gunicorn 每个 worker 各起一个，靠 flock 去重实际取数。
 weather.start_background()
+
+# native 页（时钟 / 计时器）后台渲染线程。控制台预览读它的落盘缓存。
+native_render.start_background()
 
 
 if __name__ == "__main__":

@@ -13,16 +13,19 @@
 #define INK_PIN_RST   10
 #define INK_PIN_BUSY  3
 #define INK_PIN_KEY_A 5
-// B 键：默认用板载 BOOT 键（GPIO9），零接线。
+// B 键：第二颗**外接**微动开关，一脚接 GPIO2、一脚接 GND。
+// 和 A 键（GPIO5）完全一样 —— 两只键都是外接的。
 //
 // 为什么不用 GPIO16：ESP32-C3 的 GPIO11~17 内部接 Flash，模块上
 // 根本没引出来。配成 GPIO16 会让固件连烧都烧不进去。
-// C3 Pro mini 上还空着、且没被占用的脚是 GPIO2 —— 想接第二颗外接
-// 微动开关就改成 2。
 //
-// 烧录前仍要量一下丝印：BOOT 键在不同板子上位置不一。
+// 为什么不用板载 BOOT（GPIO9）：BOOT 键是启动采样脚，复位时按住
+// 会进下载模式。GPIO9 留给下载，不当交互键。
+//
+// GPIO2 也是启动采样脚：固件开内部上拉，复位时保持高电平正常启动；
+// 复位那一瞬间按住 B 会进下载模式 —— 上电和复位时别按 B。
 #ifndef INK_PIN_KEY_B
-#define INK_PIN_KEY_B 9
+#define INK_PIN_KEY_B 2
 #endif
 
 // 引脚冲突在编译期拦住。

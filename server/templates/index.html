@@ -45,6 +45,17 @@
       </div>
 
       <div class="card">
+        <h2>按键</h2>
+        <p class="note">两颗都是<strong>外接微动开关</strong>，一脚接引脚、一脚接 GND，固件用内部上拉。</p>
+        <div class="keymap">
+          <div class="keymap-row"><span class="k">A 键（GPIO5）</span><span class="v">短按 下一页 · 双击 上一页 · 长按 立即全刷清残影</span></div>
+          <div class="keymap-row"><span class="k">B 键（GPIO2）</span><span class="v">短按 刷新当前页 · 双击 回第一页 · 长按 进入配网</span></div>
+        </div>
+        <p class="note">计时器页上 B 键是计时器专用：短按 启停 · 双击 换预设 · 长按 重置。</p>
+        <p class="note">上电和复位时别按住 B 键 —— GPIO2 是启动采样脚，按住会进下载模式。</p>
+      </div>
+
+      <div class="card">
         <h2>设备连接信息</h2>
         <div class="kv">
           <div class="kv-row"><span class="k">服务端</span><span class="v"><code>{{ request.host_url }}eink-mini/</code></span></div>
@@ -66,8 +77,24 @@
           <p class="note">{{ f.desc }}</p>
           {% if f.type == 'timer' %}
           <div class="preview-wrap">
-            <div class="preview-empty-static">设备本地渲染<br>这里看不到画面</div>
+            <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview"
+                 onerror="this.parentNode.innerHTML='<div class=&quot;preview-empty-static&quot;>后台渲染中<br>稍等几秒再刷新</div>'">
           </div>
+          <div class="preview-states">
+            <span class="muted">其它状态：</span>
+            <a href="preview/{{ f.id }}.png?state=READY" target="_blank">就绪</a>
+            <a href="preview/{{ f.id }}.png?state=RUN" target="_blank">运行中</a>
+            <a href="preview/{{ f.id }}.png?state=PAUSE" target="_blank">暂停</a>
+            <a href="preview/{{ f.id }}.png?state=DONE" target="_blank">完成</a>
+          </div>
+          <p class="preview-meta">
+            {% set meta = native_meta.get(f.id) %}
+            {% if meta and meta.rendered_at_text %}
+            后台渲染于 {{ meta.rendered_at_text }}
+            {% else %}
+            后台渲染中，稍等几秒刷新
+            {% endif %}
+          </p>
           <div class="keymap">
             <div class="keymap-row"><span class="k">B 短按</span><span class="v">开始 / 暂停 / 继续，归零后再按重新开始</span></div>
             <div class="keymap-row"><span class="k">B 双击</span><span class="v">换下一个预设（正在计时时忽略）</span></div>
@@ -78,10 +105,26 @@
           <p class="note">预设固定在固件里：1 / 3 / 5 / 10 / 15 / 25 / 30 / 45 分钟。
             这一页完全在设备上跑，<strong>不拉位图、零流量</strong>，
             计时用设备的 millis()，所以断网、甚至没校过时都能用。</p>
+          <p class="note">上面这张是<strong>代表性画面</strong>（就绪状态、15 分钟档）。
+            设备上真实的倒计时存在设备自己的内存里，服务端看不到 —— 上面的
+            「其它状态」是按需渲染的示意，不是设备的实时数值。</p>
           {% elif f.type == 'native' %}
           <div class="preview-wrap">
-            <div class="preview-empty-static">设备本地渲染<br>这里看不到画面</div>
+            <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview"
+                 onerror="this.parentNode.innerHTML='<div class=&quot;preview-empty-static&quot;>后台渲染中<br>稍等几秒再刷新</div>'">
           </div>
+          <p class="preview-meta">
+            {% set meta = native_meta.get(f.id) %}
+            {% if meta and meta.rendered_at_text %}
+            后台渲染于 {{ meta.rendered_at_text }}
+            {% else %}
+            后台渲染中，稍等几秒刷新
+            {% endif %}
+          </p>
+          <p class="note">这张图是主机端渲染器画的 —— 编译的是固件里<strong>同一份</strong>
+            画布和版式代码，所以像素和设备上的一致，不是「长得像」。
+            画面上的时间是服务端当前时间（时区同样 +8），
+            设备校时之后显示的也是这个时间。</p>
           {% else %}
           <div class="preview-wrap">
             <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview">

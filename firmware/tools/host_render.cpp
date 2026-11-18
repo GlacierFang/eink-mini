@@ -116,11 +116,16 @@ static uint32_t getU32(const char* key, uint32_t def)
   return (uint32_t)strtoul(p + 1, NULL, 10);
 }
 
+// 多个字符串参数要同时活着（label 和 state 都是），所以用一组轮换的
+// 缓冲区 —— 单个 static buf 会被后一次调用覆盖，label 会变成 state 的值。
 static const char* getStr(const char* key, const char* def)
 {
   const char* p = strstr(key, "=");
   if (!p) return def;
-  static char buf[128];
+  static char bufs[4][128];
+  static int next = 0;
+  char* buf = bufs[next];
+  next = (next + 1) % 4;
   size_t i = 0;
   p++;
   while (*p && *p != ' ' && i < sizeof(buf) - 1) buf[i++] = *p++;

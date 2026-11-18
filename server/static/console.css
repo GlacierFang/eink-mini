@@ -200,6 +200,30 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px; }
   text-align: center;
   line-height: 1.9;
 }
+.preview-states {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.preview-states a {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 9px;
+  text-decoration: none;
+  color: var(--text);
+}
+.preview-states a:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.preview-meta {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
 
 /* 表单 */
 .field { margin-bottom: 4px; }
