@@ -110,6 +110,26 @@ python3 tools/gen_fonts.py \
 翻页钟的规矩：**卡片一样宽，数字居中**。所有字形用同一个缩放系数，
 `1` 保持窄，不被拉胖。
 
+### 5x7 小字库
+
+`src/ink_font.h` 由 `tools/gen_font5x7.py` 生成，**基线对齐**：
+
+| 类别 | 行区间 |
+|---|---|
+| 大写 / 数字 / b d f h k l t | row 0..5 |
+| x 高度小写 a c e m n o r s u | row 2..5 |
+| 下伸部 g j p q y | row 2..5 + row 6 |
+
+整行文字底部对齐。之前那张表 `A` 的顶部糊成一团（读起来像小写 a），
+而且大写末行不齐 —— 详见生成器文件头。
+
+```bash
+cd firmware
+python3 tools/gen_font5x7.py \
+    --font /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf \
+    --out src/ink_font.h
+```
+
 ### 极性可切换
 
 `src/ink_config.h` 里 `INK_FLIP_INVERTED`：
