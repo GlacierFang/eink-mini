@@ -146,6 +146,33 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px; }
   font-variant-numeric: tabular-nums;
 }
 
+/* 按键表：单列。
+   .kv 是 auto-fill minmax(250px, 1fr) 的多列 grid —— 5 行按键塞进去
+   会挤成两列，读起来像串行。按键表必须一行一条。 */
+.keymap {
+  margin-top: 10px;
+  border-top: 1px solid rgba(42, 49, 64, .5);
+}
+.keymap-row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(42, 49, 64, .5);
+}
+.keymap-row:last-child { border-bottom: none; }
+.keymap-row .k {
+  flex: 0 0 76px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.keymap-row .v {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+}
+
 /* 预览 */
 .preview-wrap {
   position: relative;
