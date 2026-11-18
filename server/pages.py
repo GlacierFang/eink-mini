@@ -319,27 +319,41 @@ def render_almanac(now=None):
     return renderer.downsample(crisp), [], None
 
 def render_hourly(weather_data, fallback_city="城市"):
-    """逐小时天气页。返回 (清晰层, [], None) —— 整页是文字和线条。
+    """逐小时天气页。返回 (清晰层, 图标列表, None)。
 
-    版式：
+    版式（12 小时）：
       顶栏   标题 + 城市
-      上半   温度折线（纯黑硬边），左轴标最高/最低温
-      下半   降水概率黑柱，≥40% 的时段在柱顶标数字
+      读数行 体感温度 / 相对湿度 / 风速（当前这一小时的值）
+      上半   天气图标 + 温度折线
+      下半   降水概率黑柱，≥40% 的在柱顶标数字
       横轴   每 3 小时一个时间标签
+
+    图标为什么画在折线上方而不是叠在曲线上：曲线是温度的**位置**编码，
+    图标是**类别**编码。两者叠一起，看不出这个点的温度是 3 度还是 5 度。
+
+    图标为什么 22x22 不是 28x28：12 列要塞进 296px，一列只有 24px。
+    从超采样画布直接降采样到 22，不是缩 28 缩来的 —— 后者会把 1px 的
+    雨丝糊成灰点（见 icons.render 的 size 参数）。
 
     折线为什么是纯黑而不是灰阶：墨水屏只有黑白，灰阶靠 bayer4 网点
     模拟，1px 细线被抖成网点就断了。宁可纯黑硬边。
     """
     w = weather_data or {}
     rows = w.get("hourly") or []
-    city = w.get("city") or fallback_city
+    # 城市名以**配置**为准，不以缓存为准。
+    # 缓存里的 city 是上次取数时的城市 —— 用户刚改完配置、后台还在
+    # 刷新时的那几十秒里，缓存城市和配置城市不是一回事。
+    # 用配置城市当标题、数据是稍旧的，比标题和数据对不上要好。
+    city = fallback_city or w.get("city") or "城市"
 
     crisp = renderer.new_canvas()
     d = renderer.draw_on(crisp)
+    icon_specs = []
 
     f_title = renderer.load_font(14, bold=True)
     f_sub = renderer.load_font(11)
     f_axis = renderer.load_font(10)
+    f_read = renderer.load_font(12)
 
     _ink_top(d, "逐小时预报", f_title, 2, 6)
     _ink_right(d, city, f_sub, 5, W - 6)
@@ -349,12 +363,13 @@ def render_hourly(weather_data, fallback_city="城市"):
         _ink_center(d, "暂无逐小时数据", f_sub, 60, W // 2)
         return renderer.downsample(crisp), [], None
 
-    temps = []
-    for r in rows:
+    def _f(row, key):
         try:
-            temps.append(float(r.get("temp")))
+            return float(row.get(key))
         except (TypeError, ValueError):
-            temps.append(None)
+            return None
+
+    temps = [_f(r, "temp") for r in rows]
     valid = [t for t in temps if t is not None]
     if not valid:
         _ink_center(d, "暂无温度数据", f_sub, 60, W // 2)
@@ -366,24 +381,80 @@ def render_hourly(weather_data, fallback_city="城市"):
 
     n = len(rows)
     plot_x0, plot_x1 = 26, 290
-    chart_top = 24
-    base_y, max_bar = 104, 26
     slot = (plot_x1 - plot_x0) / float(n)
     xs = [plot_x0 + slot * (i + 0.5) for i in range(n)]
 
-    # 先看有没有降水。没有降水就把温度曲线拉高占住下半屏，
-    # 否则下面 40px 是一片空白，看着像渲染坏了。
-    pops = []
-    for r in rows:
-        try:
-            pops.append(float(r.get("pop")))
-        except (TypeError, ValueError):
-            pops.append(None)
+    pops = [_f(r, "pop") for r in rows]
     real_pops = [p for p in pops if p is not None]
     max_pop = max(real_pops) if real_pops else 0.0
     has_rain = max_pop > 0
 
-    chart_bottom = 62 if has_rain else 74
+    # ---- 读数行：体感 / 湿度 / 风速 ----
+    #
+    # 只放当前这一小时的值（rows[0]），不是 12 小时的范围 ——
+    # 范围值没有时间锚点，看的人不知道是几点的范围。
+    first = rows[0]
+    reads = []
+    ap = _f(first, "apparent")
+    if ap is not None:
+        reads.append(("体感", "%d°" % round(ap)))
+    hum = _f(first, "humidity")
+    if hum is not None:
+        reads.append(("湿度", "%d%%" % round(hum)))
+    wind = _f(first, "wind")
+    if wind is not None:
+        reads.append(("风", "%dkm/h" % round(wind)))
+    rx = 6
+    for label, value in reads:
+        lw = renderer.text_width(d, label, f_read)
+        vw = renderer.text_width(d, value, f_read)
+        d.text((rx, 22), label, font=f_read, fill=0)
+        d.text((rx + lw + 3, 22), value, font=f_read, fill=0)
+        rx += lw + vw + 14
+
+    # ---- 天气图标：每个整点一个，画在折线上方 ----
+    #
+    # 图标放在曲线**上方**，不叠在曲线上：曲线是位置编码，
+    # 图标是类别编码，叠在一起两边都读不出来。
+    #
+    # 尺寸 22：12 列要塞进 296px，一列只有 24px，28 宽放不下。
+    # 从超采样画布直接降采样到 22，不是缩 28 缩来的（后者会把
+    # 1px 雨丝糊成灰点，见 icons.render 的 size 参数）。
+    #
+    # **太阳例外**：sun 的 ☀ 字形是 28px 原生渲染的，缩到 22 后
+    # 光芒和圆环粘连成一坨实心黑（实测整个外圈全黑）。
+    # 晴天改画圆环 + 四道短光芒，线条缩放不会糊。
+    #
+    # 垂直分层：读数行 y=22..34、图标行 y=36..58、曲线区 y=60 起。
+    # 三层不重叠 —— 挤在一行里第一个图标会贴着读数，第二个会压住数字。
+    icon_size = 22
+    icon_y = 36
+    for i, row in enumerate(rows):
+        kind = icons.kind_for(row.get("code"))
+        if not kind:
+            continue
+        # 只画隔一个的点 —— 12 个全画会挤成一团，看不出变化。
+        if i % 2 != 0 and i != n - 1:
+            continue
+        cx = xs[i]
+        if kind == "sun":
+            cy = icon_y + icon_size // 2
+            d.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], outline=0, width=2)
+            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                d.line([(cx + dx * 5, cy + dy * 5),
+                        (cx + dx * 8, cy + dy * 8)], fill=0, width=2)
+            continue
+        icrisp, itone = icons.render(kind, icon_size)
+        if icrisp is None:
+            continue
+        ox = int(cx - icon_size / 2)
+        if ox < 0 or ox + icon_size > W:
+            continue
+        icon_specs.append((ox, icon_y, icrisp, itone))
+
+    chart_top = 60
+    base_y, max_bar = 104, 26
+    chart_bottom = 82 if has_rain else 88
 
     def ty(t):
         return chart_bottom - (t - tmin) / (tmax - tmin) * (chart_bottom - chart_top)
@@ -415,8 +486,10 @@ def render_hourly(weather_data, fallback_city="城市"):
                 _ink_center(d, "%d" % round(pop), f_axis, base_y - h - 10, cx)
     else:
         # 没降水就写清楚，不让下半屏空着。
-        # 文字放在分隔线和横轴之间 —— 不能压曲线（曲线最低到 chart_bottom）。
-        _ink_center(d, "未来 12 小时无降水", f_sub, chart_bottom + 12, W // 2)
+        # 放在分隔线和横轴之间 —— 不能压曲线（曲线最低到 chart_bottom），
+        # 也不能压时间轴（时间轴在 y=110）。无雨时 chart_bottom=88，
+        # 文字墨迹 12px 高，落在 90..102，离时间轴还有 8px。
+        _ink_center(d, "未来 12 小时无降水", f_sub, chart_bottom + 4, W // 2)
 
     # ---- 横轴时间 ----
     marks = list(range(0, n, 3))
@@ -428,5 +501,4 @@ def render_hourly(weather_data, fallback_city="城市"):
             continue
         _ink_center(d, "%d时" % hh, f_axis, 110, xs[i])
 
-    return renderer.downsample(crisp), [], None
-
+    return renderer.downsample(crisp), icon_specs, None

@@ -191,12 +191,12 @@ def _erode(mask, k):
     return mask.filter(ImageFilter.MinFilter(k))
 
 
-def _components(mask):
+def _components(mask, size=SIZE):
     """连通域 -> [[(x, y), ...]]。四邻接。"""
-    seen = [[False] * SIZE for _ in range(SIZE)]
+    seen = [[False] * size for _ in range(size)]
     out = []
-    for y in range(SIZE):
-        for x in range(SIZE):
+    for y in range(size):
+        for x in range(size):
             if mask.getpixel((x, y)) > 127 and not seen[y][x]:
                 stack = [(x, y)]
                 seen[y][x] = True
@@ -206,7 +206,7 @@ def _components(mask):
                     cells.append((cx, cy))
                     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                         nx, ny = cx + dx, cy + dy
-                        if 0 <= nx < SIZE and 0 <= ny < SIZE:
+                        if 0 <= nx < size and 0 <= ny < size:
                             if not seen[ny][nx] and mask.getpixel((nx, ny)) > 127:
                                 seen[ny][nx] = True
                                 stack.append((nx, ny))
@@ -214,8 +214,8 @@ def _components(mask):
     return out
 
 
-def _split_layers(crisp):
-    """画好的图标 -> (轮廓清晰层 28x28, 内部灰阶层 28x28)。
+def _split_layers(crisp, size=SIZE):
+    """画好的图标 -> (轮廓清晰层 size x size, 内部灰阶层 size x size)。
 
     轮廓 = 形状外 2px，留在清晰层硬边输出，形状边界不糊。
     内部 = 腐蚀 2px 后的厚块，填 50% 灰交给有序抖动（bayer4）。
@@ -229,18 +229,25 @@ def _split_layers(crisp):
     那点面积抖出来是散点不是灰 —— 实测 sun 的 30px 内块抖完
     texture_sd 40.55，是 cloud（19.63）的两倍，就是散点噪。
     """
-    size = (SIZE, SIZE)
+    size = (size, size)
     # 用页面清晰层同一套阈值（165），保证轮廓宽度和以前的实心剪影一致。
     shape = crisp.point(lambda v: 255 if v < 165 else 0)
-    inner = _erode(shape, 5)
+
+    # 小尺寸版：腐蚀核和面积门限按比例缩，否则 21x21 上什么都腐蚀不掉，
+    # 整块实心，灰阶层退化成纯黑剪影。
+    ratio = size[0] / float(SIZE)
+    k = 5 if ratio >= 0.99 else 3
+    min_area = max(16, int(64 * ratio * ratio))
+    min_span = max(5, int(round(8 * ratio)))
+    inner = _erode(shape, k)
 
     keep = Image.new("L", size, 0)
-    for cells in _components(inner):
-        if len(cells) < 64:
+    for cells in _components(inner, size[0]):
+        if len(cells) < min_area:
             continue
         xs = [c[0] for c in cells]
         ys = [c[1] for c in cells]
-        if (max(xs) - min(xs) + 1) < 8 or (max(ys) - min(ys) + 1) < 8:
+        if (max(xs) - min(xs) + 1) < min_span or (max(ys) - min(ys) + 1) < min_span:
             continue
         for (x, y) in cells:
             keep.putpixel((x, y), 255)
@@ -249,26 +256,29 @@ def _split_layers(crisp):
     op = outline.load()
     sp = shape.load()
     kp = keep.load()
-    for y in range(SIZE):
-        for x in range(SIZE):
+    for y in range(size[1]):
+        for x in range(size[0]):
             if sp[x, y] > 127 and kp[x, y] <= 127:
                 op[x, y] = 0
 
     tone = Image.new("L", size, 255)
     tp = tone.load()
-    for y in range(SIZE):
-        for x in range(SIZE):
+    for y in range(size[1]):
+        for x in range(size[0]):
             if kp[x, y] > 127:
                 tp[x, y] = 128
 
     return outline, tone
 
 
-def render(kind):
-    """画一个图标，返回 (轮廓清晰层 28x28, 内部灰阶层 28x28)。
+def render(kind, size=SIZE):
+    """画一个图标，返回 (轮廓清晰层 size x size, 内部灰阶层 size x size)。
 
     局部画布 -> 降采样回 28x28 -> 拆成轮廓层和内部灰阶层。
     轮廓走硬阈值，内部走 bayer4 抖动，量化时取并集（见 renderer.page_mask）。
+
+    size < SIZE 时从超采样画布**直接**降采样到目标尺寸，不是把 28x28
+    缩一遍 —— 后者会让 1px 的雨丝糊成灰点。
     """
     if kind not in set(_KIND.values()):
         return None, None
@@ -330,4 +340,6 @@ def render(kind):
         d.rectangle((2, 24, 4, 27), fill=0)
         d.rectangle((23, 24, 26, 27), fill=0)
 
-    return _split_layers(renderer.downsample(img, size=(SIZE, SIZE)))
+    if size == SIZE:
+        return _split_layers(renderer.downsample(img, size=(SIZE, SIZE)))
+    return _split_layers(renderer.downsample(img, size=(size, size)), size=size)

@@ -26,8 +26,17 @@ except ImportError:  # pragma: no cover
 log = logging.getLogger("eink-mini.weather")
 
 DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
-CACHE_PATH = DATA_DIR / "weather_cache.json"
-LOCK_PATH = DATA_DIR / "weather_cache.lock"
+
+# 两个槽位各一份缓存：天气页和逐小时页的城市是独立的，
+# 数据不能混在一份文件里 —— 各自的城市、自己的锁、自己的 TTL。
+CACHE_PATHS = {
+    "weather": DATA_DIR / "weather_cache.json",
+    "hourly": DATA_DIR / "weather_hourly_cache.json",
+}
+LOCK_PATHS = {
+    "weather": DATA_DIR / "weather_cache.lock",
+    "hourly": DATA_DIR / "weather_hourly_cache.lock",
+}
 
 TTL_SEC = 1800        # 天气 30 分钟不变
 GEO_TTL_SEC = 86400   # 城市名 -> 坐标，一天内不重复查
@@ -202,8 +211,9 @@ def _fetch(lat, lon, city):
             "longitude": round(float(lon), 4),
             "current": "temperature_2m,weather_code,relative_humidity_2m",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min",
-            # 逐小时页要的数据：温度曲线 + 降水概率。
-            "hourly": "temperature_2m,precipitation_probability",
+            # 逐小时页要的数据：温度、体感、湿度、降水概率、风速、天气码。
+            "hourly": ("temperature_2m,apparent_temperature,relative_humidity_2m,"
+                       "precipitation_probability,wind_speed_10m,weather_code"),
             "forecast_days": 3,
             "forecast_hours": 24,
             "timezone": "auto",
@@ -235,6 +245,10 @@ def _fetch(lat, lon, city):
     h_times = hourly.get("time") or []
     h_temps = hourly.get("temperature_2m") or []
     h_pops = hourly.get("precipitation_probability") or []
+    h_app = hourly.get("apparent_temperature") or []
+    h_hum = hourly.get("relative_humidity_2m") or []
+    h_wind = hourly.get("wind_speed_10m") or []
+    h_code = hourly.get("weather_code") or []
     hourly_rows = []
     if h_times:
         now_h = datetime.now().replace(minute=0, second=0, microsecond=0)
@@ -256,7 +270,12 @@ def _fetch(lat, lon, city):
                 "time": str(h_times[i]),
                 "hour": dt.hour,
                 "temp": _num(h_temps[i]) if i < len(h_temps) else "",
+                "apparent": _num(h_app[i]) if i < len(h_app) else "",
+                "humidity": _num(h_hum[i]) if i < len(h_hum) else "",
                 "pop": _num(h_pops[i]) if i < len(h_pops) else "",
+                "wind": _num(h_wind[i]) if i < len(h_wind) else "",
+                "code": (int(h_code[i]) if i < len(h_code)
+                         and h_code[i] is not None else None),
             })
 
     return {
@@ -269,9 +288,10 @@ def _fetch(lat, lon, city):
     }
 
 
-def _read_cache():
+def _read_cache(slot="weather"):
+    path = CACHE_PATHS.get(slot, CACHE_PATHS["weather"])
     try:
-        data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -279,53 +299,65 @@ def _read_cache():
     return data
 
 
-def _write_cache(payload):
+def _write_cache(payload, slot="weather"):
+    path = CACHE_PATHS.get(slot, CACHE_PATHS["weather"])
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CACHE_PATH.with_suffix(".tmp")
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(str(tmp), str(CACHE_PATH))
+    os.replace(str(tmp), str(path))
 
 
-def get_weather():
+def get_weather(slot="weather"):
     """只读缓存，瞬时返回。拿不到返回 None —— 屏上显示占位，不显示假数据。"""
-    payload = _read_cache()
+    payload = _read_cache(slot)
     if not payload or not payload.get("data"):
         return None
     return payload["data"]
 
 
-def get_weather_stamp():
+def get_weather_stamp(slot="weather"):
     """缓存取数时间戳。页面版本号靠它：天气更新了版本才变。"""
-    payload = _read_cache()
+    payload = _read_cache(slot)
     if not payload:
         return 0
     return int(payload.get("at") or 0)
 
 
-def refresh(force=False):
-    """取一次数写进缓存。抢 flock，别的 worker 直接返回 False。"""
+def refresh(force=False, slot="weather"):
+    """取一次数写进缓存。抢 flock，别的 worker 直接返回 False。
+
+    slot="weather" 取天气页的城市；slot="hourly" 取逐小时页的城市。
+    两者独立 —— 见 config_store.resolve_hourly。
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock_fh = None
+    lock_path = LOCK_PATHS.get(slot, LOCK_PATHS["weather"])
     try:
         if fcntl is not None:
-            lock_fh = open(str(LOCK_PATH), "w")
+            lock_fh = open(str(lock_path), "w")
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        payload = _read_cache()
+        payload = _read_cache(slot)
         if not force and payload and (time.time() - float(payload.get("at") or 0)) < TTL_SEC:
             return False
         import config_store
 
         cfg = config_store.get_config()
-        lat, lon, label = _resolve(cfg.get("city"))
-        data = _fetch(lat, lon, label)
+        if slot == "hourly":
+            # 坐标是保存时地理编码算好的，直接用。别再按名字查一遍 ——
+            # _resolve 查不到会静默退回默认城市，那是最难查的一类错。
+            city, lat, lon = config_store.resolve_hourly(cfg)
+            data = _fetch(lat, lon, city)
+        else:
+            lat, lon, label = _resolve(cfg.get("city"))
+            data = _fetch(lat, lon, label)
         if data is None:
             # 取数失败：保留上次成功的数据，只更新城市标签
             if payload and payload.get("data"):
                 old = dict(payload["data"])
-                old["city"] = label
-                _write_cache({"at": payload.get("at"), "data": old})
+                old["city"] = city if slot == "hourly" else label
+                _write_cache({"at": payload.get("at"), "data": old}, slot)
             return False
-        _write_cache({"at": time.time(), "data": data})
+        _write_cache({"at": time.time(), "data": data}, slot)
         return True
     except Exception as exc:
         log.warning("天气取数失败: %s", exc)
@@ -341,10 +373,11 @@ def refresh(force=False):
 
 def _loop():
     while True:
-        try:
-            refresh()
-        except Exception as exc:
-            log.warning("天气后台线程异常: %s", exc)
+        for slot in ("weather", "hourly"):
+            try:
+                refresh(slot=slot)
+            except Exception as exc:
+                log.warning("天气取数异常(%s): %s", slot, exc)
         time.sleep(POLL_SEC)
 
 
@@ -366,9 +399,9 @@ def start_background():
 # 预报行用的短描述，控制在 3 个字以内。
 # 三列并排，列宽有限 —— 描述写长了会被裁，切一半的词更难认。
 # 用中国气象的规范简称：晴多云 / 毛毛雨 / 雷阵雨 / 冰雹。
-def get_weather_at():
+def get_weather_at(slot="weather"):
     """缓存取数时间，人类可读格式。取不到就空串。"""
-    stamp = get_weather_stamp()
+    stamp = get_weather_stamp(slot)
     if not stamp:
         return ""
     try:

@@ -173,15 +173,15 @@
           {% if f.id == 'hourly' %}
           <div class="field">
             <h3 style="margin:18px 0 8px;font-size:13px">当前取数</h3>
-            {% if weather %}
+            {% if hourly_weather %}
             <div class="kv">
-              <div class="kv-row"><span class="k">城市</span><span class="v">{{ weather.city }}</span></div>
-              <div class="kv-row"><span class="k">逐小时点数</span><span class="v">{{ weather.hourly | length }}</span></div>
-              <div class="kv-row"><span class="k">取数时间</span><span class="v">{{ weather_at or "还没取到" }}</span></div>
+              <div class="kv-row"><span class="k">城市</span><span class="v">{{ hourly_city }}</span></div>
+              <div class="kv-row"><span class="k">逐小时点数</span><span class="v">{{ hourly_weather.hourly | length }}</span></div>
+              <div class="kv-row"><span class="k">取数时间</span><span class="v">{{ hourly_at or "还没取到" }}</span></div>
             </div>
-            <p class="note">城市跟随「天气」页的设置。</p>
+            <p class="note">这个页面的城市和「天气」页互不影响。上面留空 = 跟着天气页的城市。</p>
             {% else %}
-            <p class="note">还没有取到天气数据。后台线程在取，可能上游暂时不通。</p>
+            <p class="note">还没有取到逐小时数据。后台线程在取，可能上游暂时不通。</p>
             {% endif %}
           </div>
           {% endif %}

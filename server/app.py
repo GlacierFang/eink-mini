@@ -38,6 +38,11 @@ CONFIG_FIELDS = {
         "type": "text",
         "hint": "填城市名，比如「杭州」。改了会重新查坐标并立刻取一次天气。",
     },
+    "hourly_city": {
+        "label": "城市",
+        "type": "text",
+        "hint": "逐小时页的城市，和天气页互不影响。留空 = 跟随天气页。",
+    },
 }
 
 # 页面注册表：id、type、标题、控制台里归到哪个功能分区
@@ -73,9 +78,9 @@ PAGES = [
         "type": "bitmap",
         "title": "逐小时",
         "label": "HOURLY",
-        "desc": "未来 12 小时的温度走势和降水概率，服务端渲染成位图下发。"
-                "和「天气」页并存，两页内容不混；城市跟随天气页的设置。",
-        "fields": [],
+        "desc": "未来 12 小时的温度走势、天气图标和降水概率，服务端渲染成位图下发。"
+                "和「天气」页并存，两页内容不混；城市可以单独设。",
+        "fields": ["hourly_city"],
     },
     {
         "id": "calendar",
@@ -102,9 +107,10 @@ _cache_lock = threading.Lock()
 
 
 def _cache_key(page_id):
-    if page_id in ("weather", "hourly"):
-        # 天气缓存的取数时间是缓存键：数据没更新就不重画
-        return (page_id, "weather", weather.get_weather_stamp())
+    if page_id == "weather":
+        return (page_id, "weather", weather.get_weather_stamp("weather"))
+    if page_id == "hourly":
+        return (page_id, "hourly", weather.get_weather_stamp("hourly"))
     if page_id == "calendar":
         return (page_id, "calendar", datetime.now().strftime("%Y%m%d"))
     if page_id == "almanac":
@@ -126,10 +132,11 @@ def render_page(page_id):
             return hit[0]
     if page_id == "weather":
         cfg = config_store.get_config()
-        layers = pages.render_weather(weather.get_weather(), cfg["city"])
+        layers = pages.render_weather(weather.get_weather("weather"), cfg["city"])
     elif page_id == "hourly":
         cfg = config_store.get_config()
-        layers = pages.render_hourly(weather.get_weather(), cfg["city"])
+        city, _lat, _lon = config_store.resolve_hourly(cfg)
+        layers = pages.render_hourly(weather.get_weather("hourly"), city)
     elif page_id == "calendar":
         layers = pages.render_calendar()
     elif page_id == "almanac":
@@ -159,7 +166,9 @@ def no_cache(resp):
 def index():
     cfg = config_store.get_config()
     state = device_state.get_state()
-    w = weather.get_weather()
+    w = weather.get_weather("weather")
+    hourly_w = weather.get_weather("hourly")
+    hourly_city, _hl, _hlo = config_store.resolve_hourly(cfg)
     features = []
     for p in PAGES:
         features.append(
@@ -193,7 +202,10 @@ def index():
         device=state,
         device_online=device_state.is_online(state),
         weather=w,
-        weather_at=weather.get_weather_at(),
+        weather_at=weather.get_weather_at("weather"),
+        hourly_weather=hourly_w,
+        hourly_city=hourly_city,
+        hourly_at=weather.get_weather_at("hourly"),
         native_meta=native_meta,
     )
 
@@ -234,9 +246,15 @@ def _page_version(page_id):
     if not entry:
         return 0
     cfg = config_store.get_config()
-    if page_id in ("weather", "hourly"):
-        seed = "%s|%s|%.4f|%.4f|%d" % (
-            page_id, cfg["city"], cfg["lat"], cfg["lon"], weather.get_weather_stamp()
+    if page_id == "weather":
+        seed = "weather|%s|%.4f|%.4f|%d" % (
+            cfg["city"], cfg["lat"], cfg["lon"],
+            weather.get_weather_stamp("weather"),
+        )
+    elif page_id == "hourly":
+        hcity, hlat, hlon = config_store.resolve_hourly(cfg)
+        seed = "hourly|%s|%.4f|%.4f|%d" % (
+            hcity, hlat, hlon, weather.get_weather_stamp("hourly"),
         )
     elif page_id == "calendar":
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
@@ -345,6 +363,18 @@ def _validate_field(key, raw):
         if not hit:
             return None, "查不到这个城市：" + value
         return {"city": value, "lat": hit[0], "lon": hit[1]}, ""
+    if key == "hourly_city":
+        # 留空 = 跟随天气页。存空串 + 清坐标，resolve_hourly 会回落。
+        if not value:
+            return {"hourly_city": "", "hourly_lat": None, "hourly_lon": None}, ""
+        hit = weather.geocode(value)
+        if not hit:
+            return None, "查不到这个城市：" + value
+        return {
+            "hourly_city": value,
+            "hourly_lat": hit[0],
+            "hourly_lon": hit[1],
+        }, ""
     return None, "未知配置项：" + key
 
 
@@ -362,11 +392,16 @@ def set_cfg():
     if not patch:
         return jsonify({"ok": False, "error": "没有可更新的字段"}), 400
     cfg = config_store.update_config(patch)
-    # 改了城市要重取天气，但别让这个请求等着 —— 后台线程去取
-    if "city" in patch:
-        threading.Thread(
-            target=weather.refresh, kwargs={"force": True}, daemon=True
-        ).start()
+    # 改了城市要重取天气，但别让这个请求等着 —— 后台线程去取。
+    # 两个槽位分开刷：改天气城市不该让逐小时页重新取一遍，反之亦然。
+    for slot in ("weather", "hourly"):
+        key = "city" if slot == "weather" else "hourly_city"
+        if key in patch:
+            threading.Thread(
+                target=weather.refresh,
+                kwargs={"force": True, "slot": slot},
+                daemon=True,
+            ).start()
     return jsonify({"ok": True, "config": cfg})
 
 
