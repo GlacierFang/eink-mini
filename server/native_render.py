@@ -43,6 +43,7 @@ SRC_FILES = [
     FW / "src" / "ink_canvas.cpp",
     FW / "src" / "ink_pages.cpp",
     FW / "src" / "ink_font_big.cpp",
+    FW / "src" / "ink_font_state.cpp",
     FW / "tools" / "host_render.cpp",
 ]
 
@@ -77,12 +78,12 @@ def build():
             if not _need_build():
                 return True
             tmp = BIN.with_name(BIN.name + ".tmp")
+            # 源文件列表只有一份：SRC_FILES 同时用于「要不要重编」的判断
+            # 和实际的编译命令。以前这里是手抄的第二份列表 —— 加了新字模
+            # 只改 SRC_FILES 的话，链接会报 undefined reference。
             cmd = [
                 "g++", "-std=c++11", "-O2", "-I", str(FW / "src"),
-                str(FW / "src" / "ink_canvas.cpp"),
-                str(FW / "src" / "ink_pages.cpp"),
-                str(FW / "src" / "ink_font_big.cpp"),
-                str(FW / "tools" / "host_render.cpp"),
+            ] + [str(p) for p in SRC_FILES] + [
                 "-o", str(tmp),
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)

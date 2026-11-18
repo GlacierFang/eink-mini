@@ -2,6 +2,7 @@
 #include "ink_canvas.h"
 #include "ink_font.h"
 #include "ink_font_big.h"
+#include "ink_font_state.h"
 
 // 画一个翻页钟大数字。
 //
@@ -106,6 +107,50 @@ int InkCanvas::textWidth(const char* s, int scale) const
   if (n == 0) return 0;
   if (scale < 1) scale = 1;
   return n * (INK_FONT_W + 1) * scale - scale;
+}
+
+// 计时器状态词（READY / RUN / PAUSE / DONE）。
+//
+// 5x7 ASCII 字库画状态词太小：PAUSE 只有 24x7 px，在 296x128 的屏上
+// 几乎看不见。计时器在跑和暂停时数字画面完全一样，状态词是唯一的
+// 区分手段，必须一眼可读 —— 这里用 TrueType 栅格化的小号字模。
+//
+// 字模是比例宽度：RUN 三个字不会显得松垮，READY 五个字也不会挤。
+void InkCanvas::drawStateText(int x, int y, const char* s, bool black)
+{
+  if (!s) return;
+  int cx = x;
+  for (int i = 0; s[i]; i++) {
+    int w = 0;
+    const uint8_t* g = inkStateGlyph(s[i], &w);
+    if (!g || w <= 0) {
+      cx += INK_STATE_SPACING;
+      continue;
+    }
+    int rb = (w + 7) / 8;
+    for (int row = 0; row < INK_STATE_H; row++) {
+      const uint8_t* r = g + row * rb;
+      for (int col = 0; col < w; col++) {
+        if ((r[col >> 3] >> (7 - (col & 7))) & 1) {
+          setPx(cx + col, y + row, black);
+        }
+      }
+    }
+    cx += w + INK_STATE_SPACING;
+  }
+}
+
+int InkCanvas::stateTextWidth(const char* s) const
+{
+  if (!s) return 0;
+  int total = 0;
+  for (int i = 0; s[i]; i++) {
+    int w = 0;
+    if (!inkStateGlyph(s[i], &w) || w <= 0) continue;
+    total += w + INK_STATE_SPACING;
+  }
+  if (total > 0) total -= INK_STATE_SPACING;
+  return total;
 }
 
 void InkCanvas::drawText(int x, int y, const char* s, bool black, int scale)

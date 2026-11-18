@@ -120,7 +120,7 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch)
 // 本地计时器页。
 //
 // 版式：
-//   顶部左：状态（READY / RUN / PAUSE / DONE），5x7 字库
+//   顶部左：状态（READY / RUN / PAUSE / DONE），专用小号字模
 //   中部：翻页钟大字 MM:SS
 //
 // 数字用字库不用七段：倒计时也是翻页钟的用法，和时钟页保持一套形态。
@@ -136,7 +136,10 @@ void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
 
   // ---- 顶部左：状态 ----
   // RUN 和 PAUSE 的数字画面完全一样，不写状态就分不清在跑还是停着。
-  c.drawText(6, 2, stateLabel, true, 1);
+  //
+  // 状态词用专用字模（13px 高），不是 5x7 ASCII：后者画出来 PAUSE
+  // 只有 24x7 px，在 296x128 的屏上几乎看不见。
+  c.drawStateText(6, 3, stateLabel, true);
 
   // ---- 中部：翻页钟大字 MM:SS ----
   uint32_t mm = remainingSec / 60UL;

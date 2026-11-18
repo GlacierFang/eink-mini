@@ -14,6 +14,7 @@
 import calendar
 from datetime import datetime
 
+import almanac
 import icons
 import renderer
 from weather import describe_short
@@ -197,15 +198,26 @@ def render_calendar(now=None):
         x = int(i * cell_w + cell_w / 2 - renderer.text_width(d, name, f_wd) / 2)
         d.text((x, 34), name, font=f_wd, fill=0)
 
-    fnum = renderer.load_font(15)
-    cell_h = 15
     weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(now.year, now.month)
+
+    # 行高按周数自适应。
+    #
+    # 原来 cell_h 写死 15、起始 y=52：六周月份的第六行落在 y=127，
+    # 15px 高的字只露出 1px —— 整行被切光。2026 年的 3 / 8 / 11 月
+    # 都是六周，这三个月各少一整行（11 月丢的是 30 号）。
+    #
+    # 现在按可用高度均分：六周时行高降到 13、字号同步降到 13，
+    # 末行落在 y=115，字完整可见。五周时行高 15.6，和原来一样。
+    grid_top = 50
+    cell_h = (H - grid_top) / float(len(weeks))
+    fnum = renderer.load_font(15 if len(weeks) <= 5 else 13)
+
     for row, week in enumerate(weeks):
         for col, day in enumerate(week):
             if day == 0:
                 continue
             x = int(col * cell_w + cell_w / 2)
-            y = 52 + row * cell_h
+            y = int(grid_top + row * cell_h)
             txt = str(day)
             tw = renderer.text_width(d, txt, fnum)
             tx = x - tw // 2
@@ -218,4 +230,66 @@ def render_calendar(now=None):
                 d.text((tx, y), txt, font=fnum, fill=255)
             else:
                 d.text((tx, y), txt, font=fnum, fill=0)
+    return renderer.downsample(crisp), []
+
+
+def render_almanac(now=None):
+    """单日黄历页。返回 (清晰层 296x128, []) —— 整页都是文字。
+
+    只画**当天**：公历日期、年干支、农历月日、日/月/年干支、节气。
+
+    不画农历月历，不画宜忌 —— 屏就那么大，一天塞得下，一个月塞不下。
+    """
+    now = now or datetime.now()
+    f = almanac.day_fields(now.date())
+
+    crisp = renderer.new_canvas()
+    d = renderer.draw_on(crisp)
+
+    f_h = renderer.load_font(15, bold=True)
+    f_s = renderer.load_font(12)
+    f_m = renderer.load_font(14)
+    f_big = renderer.load_font(26, bold=True)
+
+    # ---- 顶部：公历日期 + 星期 | 年干支 + 生肖 ----
+    d.text((6, 3), "%d月%d日 %s" % (f["date"].month, f["date"].day, f["week"]),
+           font=f_h, fill=0)
+    rt = "%s %s" % (f["ganzhi_year"], f["shengxiao"])
+    d.text((W - 6 - renderer.text_width(d, rt, f_s), 5), rt, font=f_s, fill=0)
+    d.line([(0, 21), (W, 21)], fill=0, width=1)
+
+    # ---- 中部左：大号农历月日 + "农历"标签 ----
+    # 大号字的墨迹从 y=35 起、到 y=61 止（26px 字体的 ascender 有偏移）。
+    # "农历"标签必须让开这段：画在 y=57 会和大号字压在一起。
+    d.text((8, 28), f["lunar_month"] + "月" + f["lunar_day"], font=f_big, fill=0)
+    d.text((10, 64), "农历", font=f_s, fill=0)
+
+    # ---- 中部右：日 / 月 / 年 三行干支 ----
+    rx = 152
+    for i, pair in enumerate((("日", f["ganzhi_day"]),
+                              ("月", f["ganzhi_month"]),
+                              ("年", f["ganzhi_year"]))):
+        yy = 29 + i * 17
+        d.text((rx, yy), pair[0], font=f_s, fill=0)
+        d.text((rx + 18, yy - 2), pair[1], font=f_m, fill=0)
+
+    d.line([(0, 86), (W, 86)], fill=0, width=1)
+
+    # ---- 底部：节气 ----
+    if f["jieqi_today"]:
+        # 今天是节气：节气本身占主位，右下补一句下个节气。
+        d.text((6, 92), "今日节气  " + f["jieqi_today"], font=f_m, fill=0)
+        nd = f["jieqi_next_date"]
+        d.text((6, 110), "下个 %s 还有 %d 天" % (f["jieqi_next"], f["days_to_next"]),
+               font=f_s, fill=0)
+    else:
+        nd = f["jieqi_next_date"]
+        d.text((6, 92), "下个节气  %s  %d月%d日"
+               % (f["jieqi_next"], nd.month, nd.day), font=f_m, fill=0)
+        d.text((6, 110), "还有 %d 天" % f["days_to_next"], font=f_s, fill=0)
+
+    pd = f["jieqi_prev_date"]
+    pg = "上个 %s %d月%d日" % (f["jieqi_prev"], pd.month, pd.day)
+    d.text((W - 6 - renderer.text_width(d, pg, f_s), 110), pg, font=f_s, fill=0)
+
     return renderer.downsample(crisp), []

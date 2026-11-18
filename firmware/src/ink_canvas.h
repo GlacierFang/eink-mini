@@ -23,6 +23,9 @@ public:
   void drawText(int x, int y, const char* s, bool black = true, int scale = 1);
   // 翻页钟的大号数字。字模在 ink_font_big.h（1 = 黑，MSB first）。
   void drawBigGlyph(int x, int y, char c, bool black = true);
+  // 计时器状态词。字模在 ink_font_state.h（1 = 黑，MSB first）。
+  void drawStateText(int x, int y, const char* s, bool black = true);
+  int  stateTextWidth(const char* s) const;
   // 超出宽度时截断并加省略号，返回实际绘制的字符数
   int  drawTextClipped(int x, int y, int maxW, const char* s, bool black = true, int scale = 1);
 

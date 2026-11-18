@@ -76,6 +76,15 @@ PAGES = [
         "desc": "当月日历，服务端渲染成位图下发。当天日期反白高亮。",
         "fields": [],
     },
+    {
+        "id": "almanac",
+        "type": "bitmap",
+        "title": "黄历",
+        "label": "ALMANAC",
+        "desc": "当天的农历、干支和节气，服务端渲染成位图下发。"
+                "只看这一天，不做农历月历，也不做宜忌。",
+        "fields": [],
+    },
 ]
 
 # 渲染缓存：key = (page_id, 缓存键)，值 = (图片, 失效时间戳)
@@ -89,6 +98,8 @@ def _cache_key(page_id):
         return (page_id, "weather", weather.get_weather_stamp())
     if page_id == "calendar":
         return (page_id, "calendar", datetime.now().strftime("%Y%m%d"))
+    if page_id == "almanac":
+        return (page_id, "almanac", datetime.now().strftime("%Y%m%d"))
     return (page_id, "static", "")
 
 
@@ -109,6 +120,8 @@ def render_page(page_id):
         layers = pages.render_weather(weather.get_weather(), cfg["city"])
     elif page_id == "calendar":
         layers = pages.render_calendar()
+    elif page_id == "almanac":
+        layers = pages.render_almanac()
     else:
         raise KeyError(page_id)
     with _cache_lock:
@@ -215,6 +228,8 @@ def _page_version(page_id):
         )
     elif page_id == "calendar":
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
+    elif page_id == "almanac":
+        seed = "almanac|%s" % datetime.now().strftime("%Y%m%d")
     else:
         seed = "clock|local"
     return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)

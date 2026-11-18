@@ -1,6 +1,6 @@
 # eink-mini
 
-2.9 寸黑白电子墨水屏桌面终端：翻页时钟、天气、月历。
+2.9 寸黑白电子墨水屏桌面终端：翻页时钟、计时器、天气、月历、单日黄历。
 
 短按切换画面。设备只当哑终端——位图由配套服务端渲染，设备只负责显示。
 
@@ -161,6 +161,26 @@ python3 tools/gen_font5x7.py \
     --out src/ink_font.h
 ```
 
+### 计时器状态词字模
+
+5x7 字库画状态词太小：`PAUSE` 只有 29x7 px，在 296x128 的屏上几乎看不见。
+而计时器在跑和暂停时数字画面完全一样，状态词是**唯一的区分手段**。
+
+所以状态词单独用一套字模 `src/ink_font_state.h`（13px 高、比例宽度），
+从 TrueType 栅格化。实测 PAUSE 从 29x7 变成 **52x10**，一眼可读。
+
+字模是**比例宽度**：`RUN` 三个字不会显得松垮，`READY` 五个字也不会挤。
+
+```bash
+cd firmware
+python3 tools/gen_font_state.py \
+    --font /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf --height 13 \
+    --out-header src/ink_font_state.h --out-source src/ink_font_state.cpp
+```
+
+字模本身在固件里，**不依赖服务端**：计时器照旧断网可用。
+服务端预览编译的是同一份 `ink_pages.cpp` / `ink_canvas.cpp`，所以预览和设备逐像素一致。
+
 ### 极性可切换
 
 `src/ink_config.h` 里 `INK_FLIP_INVERTED`：
@@ -266,7 +286,9 @@ firmware/lib/GxEPD2/          vendored GxEPD2 最小子集（见许可）
 server/
   app.py            Flask 应用与路由
   renderer.py       1bpp 帧编码（296x128，MSB first，1=黑，4736 字节）
-  pages.py          天气 / 月历页面渲染
+  pages.py          天气 / 月历 / 单日黄历页面渲染
+  almanac.py        农历、干支、节气换算（立春换年、节气换月的规则见文件头）
+  lunar_python/     vendored 农历库（MIT，见该目录 LICENSE）
   weather.py        Open-Meteo 取数（后台线程 + 落盘缓存，渲染路径只读缓存）
   device_state.py   设备在线状态（最后活动、来源、计数，落盘）
   config_store.py   配置存储（城市、坐标）
@@ -293,8 +315,8 @@ server/openclaw-eink-mini.service
 | POST /api/config | 改城市 |
 | GET /api/device | 设备在线状态 |
 
-页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`bitmap` = 服务端下发位图。
-当前三个页：clock（native）、weather、calendar。
+页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`timer` = 设备本地计时器，`bitmap` = 服务端下发位图。
+当前五个页：clock（native）、timer（timer）、weather、calendar、almanac。
 
 清单里的 `version` 按页面内容算指纹：配置或日期变了才变，设备据此决定要不要重下位图。
 （早期版本用时间戳，导致设备每次轮询都认为页面全变，反复重下全部位图。）
@@ -425,7 +447,7 @@ dither 那点灰阶收益换不来小字可读性，所以**默认硬阈值 165*
 
 深色单页，标签页布局，设计令牌沿用 petd 后台：
 
-- 标签页：设备 / 时钟 / 天气 / 月历 —— **一个功能一区，配置和预览同区**
+- 标签页：设备 / 时钟 / 计时器 / 天气 / 月历 / 黄历 —— **一个功能一区，配置和预览同区**
 - 设备页：在线状态、最后活动、来源 IP、UA、拉取次数、设备连接参数
 - 功能区：左侧设备画面预览，右侧该功能的配置项
 - 配置项由服务端的 `CONFIG_FIELDS` 表长出来：加一个可配置项 = 加一行，前后端都跟着长
@@ -434,5 +456,9 @@ dither 那点灰阶收益换不来小字可读性，所以**默认硬阈值 165*
 
 ## 许可
 
-仓库代码 MIT。`firmware/lib/GxEPD2/` 是 vendored 的 GxEPD2 最小子集，
-沿用上游 **GPL-3.0** 许可（该目录下的 LICENSE 文件），与仓库根目录的 MIT 并存。
+仓库代码 MIT。vendored 依赖各自保留上游许可：
+
+| 目录 | 上游 | 许可 |
+|---|---|---|
+| `firmware/lib/GxEPD2/` | GxEPD2 最小子集 | **GPL-3.0** |
+| `server/lunar_python/` | lunar-python（6tail） | **MIT** |
