@@ -203,30 +203,151 @@ uint32_t InkNet::epoch()
 }
 
 // ---------------------------------------------------------------- 配网页
+//
+// 配网页能扫周围的 2.4GHz 热点直接选，不用手打名字。
+//
+// 为什么值得做：ESP32-C3 只有 2.4GHz 射频。手打名字有两个坑 ——
+// 大小写/空格打错，以及打了一个 5GHz 的名字（扫不到、连不上，
+// 现象是"一直转圈"）。扫出来的天然全是 C3 能连的。
+//
+// 手输框保留：隐藏 SSID 扫不到，只能手打。
+
+// 扫到的热点缓存成 <option> 列表，渲染 / 时拼进 HTML。
+static String g_wifiOptionsHtml = "";
+
+// SSID 可能带引号、& 等字符，直接塞进 HTML 属性会把页面结构冲掉。
+static String htmlEscape(const char* s)
+{
+  String out;
+  if (!s) return out;
+  for (const char* p = s; *p; p++) {
+    switch (*p) {
+      case '&':  out += "&amp;";  break;
+      case '"':  out += "&quot;"; break;
+      case '\'': out += "&#39;";  break;
+      case '<':  out += "&lt;";   break;
+      case '>':  out += "&gt;";   break;
+      default:   out += *p;       break;
+    }
+  }
+  return out;
+}
+
+// 扫一遍周围热点，生成下拉列表。
+//
+// 同名 SSID 去重（Mesh 组网一个名字能扫出好几条），留信号最强的。
+// 读完必须 scanDelete()，否则扫描缓存一直占着堆。
+static void scanWifiOptions()
+{
+  Serial.println("[cfg] 正在扫描周围 2.4GHz WiFi ...");
+  g_wifiOptionsHtml = "";
+  int n = WiFi.scanNetworks(false, false);
+  if (n <= 0) {
+    WiFi.scanDelete();
+    Serial.println("[cfg] 没扫到热点，可手输");
+    return;
+  }
+
+  // 按信号强度降序。扫到的数量不封顶，但只取前 32 个 ——
+  // 弱信号那几十个用户不会选，塞进页面只会让它变长。
+  int idx[32];
+  int cnt = (n > 32) ? 32 : n;
+  for (int i = 0; i < cnt; i++) idx[i] = i;
+  for (int i = 0; i < cnt - 1; i++) {
+    for (int j = i + 1; j < cnt; j++) {
+      if (WiFi.RSSI(idx[j]) > WiFi.RSSI(idx[i])) {
+        int t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+      }
+    }
+  }
+
+  // 去重：同名只留第一条 —— 上面已按 RSSI 降序，第一条就是最强的。
+  String seen[32];
+  int seenCnt = 0;
+  for (int i = 0; i < cnt; i++) {
+    String s = WiFi.SSID(idx[i]);
+    if (s.length() == 0) continue;
+    bool dup = false;
+    for (int k = 0; k < seenCnt; k++) {
+      if (seen[k] == s) { dup = true; break; }
+    }
+    if (dup) continue;
+    seen[seenCnt++] = s;
+
+    String esc = htmlEscape(s.c_str());
+    String sel = (s == String(g_cfgSsid)) ? " selected" : "";
+    g_wifiOptionsHtml += "<option value='" + esc + "'" + sel + ">" +
+                         esc + " (" + String(WiFi.RSSI(idx[i])) + "dBm)</option>";
+  }
+  WiFi.scanDelete();
+  Serial.printf("[cfg] 扫描完成，共 %d 个可用热点\n", seenCnt);
+}
+
 static void handleRoot()
 {
+  String curSsid = htmlEscape(g_cfgSsid);
+  String curPass = htmlEscape(g_cfgPass);
+  String curHost = htmlEscape(g_cfgHost);
+  String curBase = htmlEscape(g_cfgBase);
+
+  // 当前 SSID 单独一行显示，**不放进手输框的 value**。
+  //
+  // 放 value 的话手输框永远非空，保存时手输值会盖掉下拉框的选择 ——
+  // 下拉框等于废了。手输框留空，用户想改就自己动手。
+  String curLabel = "";
+  if (String(g_cfgSsid).length() > 0) {
+    curLabel = "<label>当前 WiFi：" + curSsid + "</label>";
+  }
+
   String html =
-    "<!doctype html><meta charset='utf-8'><title>eink-mini setup</title>"
-    "<style>body{font-family:sans-serif;max-width:420px;margin:40px auto}"
-    "input,button{width:100%;padding:9px;margin:5px 0;box-sizing:border-box}"
-    "label{font-size:13px;color:#555}</style>"
+    "<!doctype html><meta charset='utf-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>eink-mini setup</title>"
+    "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 14px}"
+    "input,select,button{width:100%;padding:10px;margin:6px 0 12px;box-sizing:border-box;font-size:15px}"
+    "label{font-size:13px;color:#444;display:block}"
+    "a.btn{float:right;font-size:12px;color:#06c;text-decoration:none}</style>"
     "<h3>eink-mini 配网</h3>"
     "<form action='/save' method='POST'>"
-    "<label>WiFi 名称</label><input name='ssid' value='" + String(g_cfgSsid) + "'>"
-    "<label>WiFi 密码</label><input name='pass' type='password' value='" + String(g_cfgPass) + "'>"
-    "<label>服务器域名</label><input name='host' value='" + String(g_cfgHost) + "'>"
-    "<label>服务路径前缀</label><input name='base' value='" + String(g_cfgBase) + "'>"
+    "<label>选择 WiFi（仅 2.4GHz）<a class='btn' href='/rescan'>重新扫描</a></label>"
+    "<select name='ssid_sel'><option value=''>-- 请选择或下方手动输入 --</option>" + g_wifiOptionsHtml + "</select>"
+    + curLabel +
+    "<label>或手动输入 WiFi 名称（填了以手输为准）</label>"
+    "<input name='ssid_manual' placeholder='隐藏网络可在此手输' value=''>"
+    "<label>WiFi 密码</label><input name='pass' type='password' value='" + curPass + "'>"
+    "<label>服务器域名</label><input name='host' value='" + curHost + "'>"
+    "<label>服务路径前缀</label><input name='base' value='" + curBase + "'>"
     "<button type='submit'>保存并重启</button>"
     "</form>";
   g_cfgServer->send(200, "text/html", html);
 }
 
+static void handleRescan()
+{
+  scanWifiOptions();
+  g_cfgServer->sendHeader("Location", "/", true);
+  g_cfgServer->send(302, "text/plain", "");
+}
+
 static void handleSave()
 {
-  if (g_cfgServer->hasArg("ssid")) strncpy(g_cfgSsid, g_cfgServer->arg("ssid").c_str(), sizeof(g_cfgSsid) - 1);
-  if (g_cfgServer->hasArg("pass")) strncpy(g_cfgPass, g_cfgServer->arg("pass").c_str(), sizeof(g_cfgPass) - 1);
-  if (g_cfgServer->hasArg("host")) strncpy(g_cfgHost, g_cfgServer->arg("host").c_str(), sizeof(g_cfgHost) - 1);
-  if (g_cfgServer->hasArg("base")) strncpy(g_cfgBase, g_cfgServer->arg("base").c_str(), sizeof(g_cfgBase) - 1);
+  // 手输优先：填了就以手输为准；没填才用下拉框选的。
+  //
+  // 手输框默认留空 —— 预填当前 SSID 会让下拉框的选择永远被盖掉。
+  String chosen = "";
+  if (g_cfgServer->hasArg("ssid_manual")) chosen = g_cfgServer->arg("ssid_manual");
+  chosen.trim();
+  if (chosen.length() == 0 && g_cfgServer->hasArg("ssid_sel")) {
+    chosen = g_cfgServer->arg("ssid_sel");
+  }
+  chosen.trim();
+
+  // 两处都没选：保留原 SSID，别把配置洗成空。
+  if (chosen.length() > 0) copyStr(g_cfgSsid, sizeof(g_cfgSsid), chosen);
+
+  if (g_cfgServer->hasArg("pass")) copyStr(g_cfgPass, sizeof(g_cfgPass), g_cfgServer->arg("pass"));
+  if (g_cfgServer->hasArg("host")) copyStr(g_cfgHost, sizeof(g_cfgHost), g_cfgServer->arg("host"));
+  if (g_cfgServer->hasArg("base")) copyStr(g_cfgBase, sizeof(g_cfgBase), g_cfgServer->arg("base"));
 
   // 落盘，重启后生效
   nvsSetStr("ssid", g_cfgSsid);
@@ -234,22 +355,39 @@ static void handleSave()
   nvsSetStr("host", g_cfgHost);
   nvsSetStr("base", g_cfgBase);
 
-  g_cfgServer->send(200, "text/html", "<h3>已保存，正在重启...</h3>");
+  g_cfgServer->send(200, "text/html", "<!doctype html><meta charset='utf-8'><h3>已保存，正在重启...</h3>");
   delay(800);
   ESP.restart();
 }
 
 void InkNet::runConfigPortal()
 {
-  WiFi.mode(WIFI_AP);
+  // 回填当前已保存的配置。
+  //
+  // 原来只拷了 ssid/pass，host/base 没拷 —— 打开配网页时域名和路径框
+  // 是空的。用户不知道该填什么，填错一个字符就连不上自己的服务器。
+  copyStr(g_cfgSsid, sizeof(g_cfgSsid), ssid_);
+  copyStr(g_cfgPass, sizeof(g_cfgPass), pass_);
+  copyStr(g_cfgHost, sizeof(g_cfgHost), host_);
+  copyStr(g_cfgBase, sizeof(g_cfgBase), base_);
+
+  // WIFI_AP_STA 而不是 WIFI_AP：双模才能边开热点边扫描。
+  //
+  // WIFI_AP 模式下射频被 SoftAP 占着，scanNetworks() 扫不到东西。
+  // 双模下扫到的天然全是 2.4GHz —— C3 的射频只支持 2.4G，
+  // 5GHz 热点根本不会被扫出来，也就不存在"连不上的 5G"。
+  WiFi.mode(WIFI_AP_STA);
+  // 先起热点再扫：扫描要几秒，起早了用户就能先连上等着。
   WiFi.softAP("eink-mini-setup");
   IPAddress ip = WiFi.softAPIP();
+  scanWifiOptions();
 
   if (!g_cfgServer) g_cfgServer = new WebServer(80);
   g_cfgServer->on("/", HTTP_GET, handleRoot);
+  g_cfgServer->on("/rescan", HTTP_GET, handleRescan);
   g_cfgServer->on("/save", HTTP_POST, handleSave);
   g_cfgServer->on("/done", HTTP_GET, []() {
-    if (g_cfgServer) g_cfgServer->send(200, "text/html", "<h3>配置完成</h3>");
+    if (g_cfgServer) g_cfgServer->send(200, "text/html", "<!doctype html><meta charset='utf-8'><h3>配置完成</h3>");
   });
   g_cfgServer->begin();
 

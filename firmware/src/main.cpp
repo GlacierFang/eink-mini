@@ -160,7 +160,12 @@ static void gotoPage(int idx)
 static void refreshManifestIfDue()
 {
   uint32_t now = millis();
-  if (now - g_lastManifestMs < 30000UL) return;
+  // g_lastManifestMs == 0 表示「还没拉过」—— 必须放行。
+  //
+  // 原来是 now - g_lastManifestMs < 30000 就跳过。开机时 g_lastManifestMs
+  // 是 0 而 millis() 也才几十，差值 < 30000，于是第一次拉取被跳过，
+  // 之后要等 30 秒才拉。开机那 30 秒屏上是自检画面。
+  if (g_lastManifestMs != 0 && (now - g_lastManifestMs) < 30000UL) return;
   g_lastManifestMs = now;
   if (!g_net.connected()) return;
   if (g_client.fetchManifest(g_pages)) {
@@ -218,6 +223,7 @@ static void handleKeys()
         switch (ev) {
           case INK_EV_SHORT:
             g_lastPageFetchMs = 0;                                // 短按：刷新当前页
+            g_dirtyPage = true;                                  // 立刻重绘
             break;
           case INK_EV_DOUBLE:
             gotoPage(0);                                           // 双击：回第一页
