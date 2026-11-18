@@ -16,8 +16,8 @@
 //
 //   host_render frame <clock|timer> <输出文件> [键=值 ...]
 //       出设备帧（4736 字节，1=黑，MSB first，每行 37 字节）。
-//       可用键：epoch, state, remaining, total, preset,
-//               presetIndex, pageIndex, pageCount
+//       可用键：epoch, state, remaining
+//               (只剩 epoch / state / remaining)
 //
 // 注意：自检画面在 main.cpp 里（依赖 g_display / g_net 全局状态），
 // 这个工具不渲染它。
@@ -81,7 +81,7 @@ static void renderSheet(const char* out)
   // 时钟页（已校时）
   {
     InkCanvas c;
-    inkRenderClockPage(c, FIXED_EPOCH, 0, 4);
+    inkRenderClockPage(c, FIXED_EPOCH);
     snprintf(path, sizeof(path), "%s/host-clock.pgm", out);
     writePGM(path, c);
   }
@@ -89,7 +89,7 @@ static void renderSheet(const char* out)
   // 时钟页（没校时）—— epoch == 0 时渲染成 --:--
   {
     InkCanvas c;
-    inkRenderClockPage(c, 0, 0, 4);
+    inkRenderClockPage(c, 0);
     snprintf(path, sizeof(path), "%s/host-clock-notime.pgm", out);
     writePGM(path, c);
   }
@@ -101,7 +101,7 @@ static void renderSheet(const char* out)
     uint32_t secs[4]      = { 900, 754, 754, 0 };
     for (int i = 0; i < 4; i++) {
       InkCanvas c;
-      inkRenderTimerPage(c, labels[i], secs[i], 900, 15, 4, 8, 1, 4);
+      inkRenderTimerPage(c, labels[i], secs[i]);
       snprintf(path, sizeof(path), "%s/host-timer-%s.pgm", out, names[i]);
       writePGM(path, c);
     }
@@ -138,11 +138,6 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
   uint32_t epoch    = getU32("epoch", 0);
   const char* state = getStr("state", "READY");
   uint32_t remain   = getU32("remaining", 900);
-  uint32_t total    = getU32("total", 900);
-  int preset        = (int)getU32("preset", 15);
-  int presetIndex   = (int)getU32("presetIndex", 4);
-  int pageIndex     = (int)getU32("pageIndex", 0);
-  int pageCount     = (int)getU32("pageCount", 4);
 
   // 未传的键从命令行尾部收
   for (int i = 0; i < argc; i++) {
@@ -150,19 +145,14 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
     if (strncmp(a, "epoch=", 6) == 0)          epoch = getU32(a, epoch);
     else if (strncmp(a, "state=", 6) == 0)     state = getStr(a, state);
     else if (strncmp(a, "remaining=", 10) == 0) remain = getU32(a, remain);
-    else if (strncmp(a, "total=", 6) == 0)      total = getU32(a, total);
-    else if (strncmp(a, "preset=", 7) == 0)    preset = (int)getU32(a, preset);
-    else if (strncmp(a, "presetIndex=", 12) == 0) presetIndex = (int)getU32(a, presetIndex);
-    else if (strncmp(a, "pageIndex=", 10) == 0)  pageIndex = (int)getU32(a, pageIndex);
-    else if (strncmp(a, "pageCount=", 10) == 0)  pageCount = (int)getU32(a, pageCount);
+
   }
 
   InkCanvas c;
   if (strcmp(page, "clock") == 0) {
-    inkRenderClockPage(c, epoch, pageIndex, pageCount);
+    inkRenderClockPage(c, epoch);
   } else if (strcmp(page, "timer") == 0) {
-    inkRenderTimerPage(c, state, remain, total, preset, presetIndex, 8,
-                       pageIndex, pageCount);
+    inkRenderTimerPage(c, state, remain);
   } else {
     fprintf(stderr, "unknown page: %s\n", page);
     return 2;

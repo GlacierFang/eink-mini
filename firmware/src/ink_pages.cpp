@@ -8,8 +8,6 @@
 #include <string.h>
 #include <time.h>
 
-static const char* WEEKDAY[7] = { "SUN","MON","TUE","WED","THU","FRI","SAT" };
-
 // ================================================================
 // 翻页钟的大数字
 //
@@ -89,8 +87,7 @@ static void twoDigits(char* out, uint32_t v)
   out[2] = 0;
 }
 
-void inkRenderClockPage(InkCanvas& c, uint32_t epoch,
-                         int pageIndex, int pageCount)
+void inkRenderClockPage(InkCanvas& c, uint32_t epoch)
 {
   c.clear();
 
@@ -103,33 +100,20 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch,
   struct tm tmv;
   gmtime_r(&t, &tmv);
 
-  int hh = tmv.tm_hour;
-  int mm = tmv.tm_min;
-  int wd = tmv.tm_wday;
-
-  // 顶部：日期 + 星期（没校时改成提示）
-  char top[48];
-  if (noTime) {
-    snprintf(top, sizeof(top), "NO TIME - CHECK WIFI");
-  } else {
-    snprintf(top, sizeof(top), "%04d-%02d-%02d  %s",
-             tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, WEEKDAY[wd]);
-  }
-  c.drawText(6, 4, top, true, 1);
-
-  // 中部：翻页钟大字 HH:MM
+  // 屏上只有一件事：现在几点。
+  // 日期、页码、状态都不画 —— 数字够大够清楚，别拿别的东西挤它。
   char digits[8];
   if (noTime) {
     digits[0] = '-'; digits[1] = '-';
     digits[2] = '-'; digits[3] = '-';
     digits[4] = 0;
   } else {
-    twoDigits(digits, (uint32_t)hh);
-    twoDigits(digits + 2, (uint32_t)mm);
+    twoDigits(digits, (uint32_t)tmv.tm_hour);
+    twoDigits(digits + 2, (uint32_t)tmv.tm_min);
   }
-  drawFlipTime(c, 16, digits);
 
-  inkRenderPageFooter(c, pageIndex, pageCount, NULL);
+  // y=20：卡片墨迹落在 22..105，屏上下各留 22px，视觉居中。
+  drawFlipTime(c, 20, digits);
 }
 
 
@@ -137,44 +121,22 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch,
 //
 // 版式：
 //   顶部左：状态（READY / RUN / PAUSE / DONE），5x7 字库
-//   顶部右：当前预设分钟数
 //   中部：翻页钟大字 MM:SS
-//   下部：进度条（随剩余时间收缩）
 //
 // 数字用字库不用七段：倒计时也是翻页钟的用法，和时钟页保持一套形态。
 //
 // 状态词用 ASCII —— 设备原生字库只有 5x7 ASCII，没有中文字模。
+//
+// 预设分钟数和进度条都不画：数字已经把剩余量说精确了，
+// 进度条只是把同一件事画粗一遍，白占一大块面积。
 void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
-                        uint32_t remainingSec, uint32_t totalSec,
-                        int presetMinutes, int presetIndex, int presetCount,
-                        int pageIndex, int pageCount)
+                        uint32_t remainingSec)
 {
   c.clear();
 
-  // ---- 顶部：状态 + 预设 ----
+  // ---- 顶部左：状态 ----
+  // RUN 和 PAUSE 的数字画面完全一样，不写状态就分不清在跑还是停着。
   c.drawText(6, 2, stateLabel, true, 1);
-
-  char presetLab[24];
-  snprintf(presetLab, sizeof(presetLab), "%d MIN", presetMinutes);
-  int pw = c.textWidth(presetLab, 1);
-  c.drawText(INK_W - 6 - pw, 2, presetLab, true, 1);
-
-  // ---- 进度条：放在顶部，大字下面留白 ----
-  //
-  // 原来进度条在底部，数字底边正好压在条上（差 1 像素），看着挤。
-  // 挪到顶部之后：状态行 -> 细条 -> 大字，三段各自分开。
-  //
-  // 剩余比例。剩下的越多，条越长 —— 扫一眼就知道还剩多少。
-  int barY = 12;
-  int barH = 6;
-  int barW = INK_W - 12;
-  int bx = 6;
-  c.drawRect(bx, barY, barW, barH, true);
-  if (totalSec > 0) {
-    uint32_t left = remainingSec > totalSec ? totalSec : remainingSec;
-    int fillW = (int)((uint64_t)barW * left / totalSec);
-    if (fillW > 0) c.fillRect(bx + 1, barY + 1, fillW - 2, barH - 2, true);
-  }
 
   // ---- 中部：翻页钟大字 MM:SS ----
   uint32_t mm = remainingSec / 60UL;
@@ -182,27 +144,7 @@ void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
   char digits[8];
   twoDigits(digits, mm);
   twoDigits(digits + 2, ss);
-  drawFlipTime(c, 18, digits);
-
-  inkRenderPageFooter(c, pageIndex, pageCount, NULL);
+  drawFlipTime(c, 20, digits);
 }
 
 
-void inkRenderPageFooter(InkCanvas& c, int pageIndex, int pageCount, const char* label)
-{
-  c.hLine(0, INK_H - 18, INK_W, true);
-  if (label && label[0]) {
-    c.drawTextClipped(4, INK_H - 13, 150, label, true, 1);
-  }
-  // 右侧页码点
-  int n = (pageCount > 0) ? pageCount : 1;
-  int dot = 4;
-  int gap = 5;
-  int total = n * dot + (n - 1) * gap;
-  int x = INK_W - 4 - total;
-  for (int i = 0; i < n; i++) {
-    bool cur = (i == pageIndex);
-    if (cur) c.fillRect(x + i * (dot + gap), INK_H - 12, dot, dot, true);
-    else      c.drawRect(x + i * (dot + gap), INK_H - 12, dot, dot, true);
-  }
-}

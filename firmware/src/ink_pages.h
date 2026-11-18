@@ -18,16 +18,9 @@ struct InkPageList {
 
 // 本地翻页钟页。
 //
-// 只有日期 + HH:MM，没有标题、没有秒数、没有状态文字 ——
-// 屏上能一眼看到的就是「现在几点」。
-void inkRenderClockPage(InkCanvas& c, uint32_t epoch,
-                         int pageIndex, int pageCount);
+// 屏上只有 HH:MM —— 没有日期、没有页码、没有状态文字。
+void inkRenderClockPage(InkCanvas& c, uint32_t epoch);
 
-// 本地计时器页
+// 本地计时器页：状态词 + MM:SS。没有预设分钟数，没有进度条。
 void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
-                        uint32_t remainingSec, uint32_t totalSec,
-                        int presetMinutes, int presetIndex, int presetCount,
-                        int pageIndex, int pageCount);
-
-// 页脚指示条
-void inkRenderPageFooter(InkCanvas& c, int pageIndex, int pageCount, const char* label);
+                        uint32_t remainingSec);

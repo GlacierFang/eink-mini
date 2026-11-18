@@ -46,14 +46,6 @@ SRC_FILES = [
     FW / "tools" / "host_render.cpp",
 ]
 
-# 页脚指示条要画页数和页序 —— 和设备 manifest 里的页一致
-PAGE_COUNT = 4
-CLOCK_INDEX = 0
-TIMER_INDEX = 1
-
-# 固件里的计时器预设：1/3/5/10/15/25/30/45 分钟，第 4 档是 15 分钟
-TIMER_PRESET_MIN = 15
-TIMER_PRESET_INDEX = 4
 
 CLOCK_TTL = 10        # 时钟页有秒，10 秒刷一次
 TIMER_TTL = 600       # 代表性状态基本不变
@@ -145,20 +137,13 @@ def frame_to_image(data):
 def _clock_kwargs():
     return {
         "epoch": int(time.time()),
-        "pageIndex": CLOCK_INDEX,
-        "pageCount": PAGE_COUNT,
     }
 
 
-def _timer_kwargs(state="READY", remaining=900, total=900):
+def _timer_kwargs(state="READY", remaining=900):
     return {
         "state": state,
         "remaining": remaining,
-        "total": total,
-        "preset": TIMER_PRESET_MIN,
-        "presetIndex": TIMER_PRESET_INDEX,
-        "pageIndex": TIMER_INDEX,
-        "pageCount": PAGE_COUNT,
     }
 
 

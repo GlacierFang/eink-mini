@@ -133,16 +133,12 @@ static bool renderCurrentPage()
       case INK_TIMER_DONE:    st = "DONE";   break;
       default:                st = "READY";  break;
     }
-    inkRenderTimerPage(g_canvas, st,
-                       g_timer.remainingSec(), g_timer.totalSec(),
-                       g_timer.presetMinutes(), g_timer.presetIndex(),
-                       g_timer.presetCount(),
-                       g_pageIndex, g_pages.count);
+    inkRenderTimerPage(g_canvas, st, g_timer.remainingSec());
     return true;
   }
 
   uint32_t ep = g_net.epoch();
-  inkRenderClockPage(g_canvas, ep, g_pageIndex, g_pages.count);
+  inkRenderClockPage(g_canvas, ep);
   return true;
 }
 
