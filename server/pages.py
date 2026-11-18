@@ -182,35 +182,62 @@ def render_weather(weather, fallback_city="城市"):
         label = (date[8:10] + "日") if len(date) >= 10 else date
         if label:
             _ink_center(d, label, f, 106, cx)
-    return renderer.downsample(crisp), icon_specs
+    return renderer.downsample(crisp), icon_specs, None
 
 
 def render_calendar(now=None):
-    """月历页。返回 (清晰层 296x128, []) —— 整页都是文字，没有图标。"""
+    """月历页。返回 (清晰层, [], 灰阶层) —— 周末列用网点浅灰打底。
+
+    版式三段：顶栏给结论（几月 + 今天几号星期几），表头给星期，
+    网格给位置。一屏之内读完「现在是什么时候」和「今天落在哪儿」。
+
+    今天用描边框不用反白填充 —— 反白会把数字整个吞掉（原来是块黑）。
+    周末的浅灰走**灰阶层**（bayer4 网点），但数字本身画在清晰层：
+    抖动会把 12px 小字的笔画打断，读不出来。
+    """
     now = now or datetime.now()
     crisp = renderer.new_canvas()
+    tone = renderer.new_tone_canvas()
     d = renderer.draw_on(crisp)
-    renderer.draw_header(d, "%d年%d月" % (now.year, now.month), "CALENDAR")
+    td = renderer.draw_on(tone)
 
-    f_wd = renderer.load_font(14)
+    # ---- 顶栏 ----
+    f_month = renderer.load_font(19, bold=True)
+    f_year = renderer.load_font(11)
+    f_today = renderer.load_font(13)
+    mtxt = "%d月" % now.month
+    _ink_top(d, mtxt, f_month, 3, 6)
+    # 年份小字对齐月标题的**墨迹底**（3 + 19 = 22），不压分割线。
+    _ink_top(d, "%d年" % now.year, f_year, 11, 6 + renderer.text_width(d, mtxt, f_month) + 5)
+    _ink_right(d, "今天 %d %s" % (now.day, WEEKDAYS[now.weekday()]), f_today, 5, W - 6)
+    d.line([(0, 23), (W, 23)], fill=0, width=1)
+
+    # ---- 星期表头 ----
+    f_wd = renderer.load_font(12)
     cell_w = W / 7.0
     for i, name in enumerate(WEEKDAYS):
-        x = int(i * cell_w + cell_w / 2 - renderer.text_width(d, name, f_wd) / 2)
-        d.text((x, 34), name, font=f_wd, fill=0)
+        _ink_center(d, name, f_wd, 27, int(i * cell_w + cell_w / 2))
 
+    # ---- 网格 ----
     weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(now.year, now.month)
 
-    # 行高按周数自适应。
+    # 行高按周数自适应：五周宽松，六周收紧，但**两种都不切字**。
+    # 六周时行高 14、字号 12，末行落在 y=112，字到 y=124，底留 4px。
+    grid_top = 42
+    bottom = 126
+    cell_h = (bottom - grid_top) / float(len(weeks))
+    fnum = renderer.load_font(14 if len(weeks) <= 5 else 12)
+
+    # 周末两列打浅灰网点底（只有网格区，不盖表头）。
     #
-    # 原来 cell_h 写死 15、起始 y=52：六周月份的第六行落在 y=127，
-    # 15px 高的字只露出 1px —— 整行被切光。2026 年的 3 / 8 / 11 月
-    # 都是六周，这三个月各少一整行（11 月丢的是 30 号）。
-    #
-    # 现在按可用高度均分：六周时行高降到 13、字号同步降到 13，
-    # 末行落在 y=115，字完整可见。五周时行高 15.6，和原来一样。
-    grid_top = 50
-    cell_h = (H - grid_top) / float(len(weeks))
-    fnum = renderer.load_font(15 if len(weeks) <= 5 else 13)
+    # 网点密度由灰度值决定（bayer4 阈值 128）：越接近 255 网点越稀。
+    # 实测密度（网格区黑像素占比）：
+    #   205 -> 约 19%   周末的 8 和 9 被网点围着，发闷
+    #   222 -> 约 12.5% 还是抢眼
+    #   235 -> 约 6.25% 只留一层薄纱，能看出是周末列，数字清楚
+    for col in (5, 6):
+        td.rectangle([int(col * cell_w), grid_top, int((col + 1) * cell_w), bottom],
+                     fill=235)
 
     for row, week in enumerate(weeks):
         for col, day in enumerate(week):
@@ -221,16 +248,13 @@ def render_calendar(now=None):
             txt = str(day)
             tw = renderer.text_width(d, txt, fnum)
             tx = x - tw // 2
+            b = d.textbbox((0, 0), txt, font=fnum)
             if day == now.day:
-                # 反白块必须罩住**墨迹本身**。按固定 cell_h 算块高，
-                # 会切掉数字底部 —— 18 里的 8 只剩上半圈。
-                b = d.textbbox((0, 0), txt, font=fnum)
-                d.rectangle([tx + b[0] - 2, y + b[1] - 1,
-                             tx + b[2] + 2, y + b[3] + 1], fill=0)
-                d.text((tx, y), txt, font=fnum, fill=255)
-            else:
-                d.text((tx, y), txt, font=fnum, fill=0)
-    return renderer.downsample(crisp), []
+                # 描边框：罩住墨迹本身，留 3px 余量，一眼认出今天。
+                d.rectangle([tx + b[0] - 3, y + b[1] - 2,
+                             tx + b[2] + 3, y + b[3] + 2], outline=0, width=1)
+            d.text((tx, y), txt, font=fnum, fill=0)
+    return renderer.downsample(crisp), [], renderer.downsample(tone)
 
 
 def render_almanac(now=None):
@@ -292,4 +316,117 @@ def render_almanac(now=None):
     pg = "上个 %s %d月%d日" % (f["jieqi_prev"], pd.month, pd.day)
     d.text((W - 6 - renderer.text_width(d, pg, f_s), 110), pg, font=f_s, fill=0)
 
-    return renderer.downsample(crisp), []
+    return renderer.downsample(crisp), [], None
+
+def render_hourly(weather_data, fallback_city="城市"):
+    """逐小时天气页。返回 (清晰层, [], None) —— 整页是文字和线条。
+
+    版式：
+      顶栏   标题 + 城市
+      上半   温度折线（纯黑硬边），左轴标最高/最低温
+      下半   降水概率黑柱，≥40% 的时段在柱顶标数字
+      横轴   每 3 小时一个时间标签
+
+    折线为什么是纯黑而不是灰阶：墨水屏只有黑白，灰阶靠 bayer4 网点
+    模拟，1px 细线被抖成网点就断了。宁可纯黑硬边。
+    """
+    w = weather_data or {}
+    rows = w.get("hourly") or []
+    city = w.get("city") or fallback_city
+
+    crisp = renderer.new_canvas()
+    d = renderer.draw_on(crisp)
+
+    f_title = renderer.load_font(14, bold=True)
+    f_sub = renderer.load_font(11)
+    f_axis = renderer.load_font(10)
+
+    _ink_top(d, "逐小时预报", f_title, 2, 6)
+    _ink_right(d, city, f_sub, 5, W - 6)
+    d.line([(0, 20), (W, 20)], fill=0, width=1)
+
+    if not rows:
+        _ink_center(d, "暂无逐小时数据", f_sub, 60, W // 2)
+        return renderer.downsample(crisp), [], None
+
+    temps = []
+    for r in rows:
+        try:
+            temps.append(float(r.get("temp")))
+        except (TypeError, ValueError):
+            temps.append(None)
+    valid = [t for t in temps if t is not None]
+    if not valid:
+        _ink_center(d, "暂无温度数据", f_sub, 60, W // 2)
+        return renderer.downsample(crisp), [], None
+
+    tmin, tmax = min(valid), max(valid)
+    if tmax - tmin < 1.0:
+        tmax = tmin + 1.0
+
+    n = len(rows)
+    plot_x0, plot_x1 = 26, 290
+    chart_top = 24
+    base_y, max_bar = 104, 26
+    slot = (plot_x1 - plot_x0) / float(n)
+    xs = [plot_x0 + slot * (i + 0.5) for i in range(n)]
+
+    # 先看有没有降水。没有降水就把温度曲线拉高占住下半屏，
+    # 否则下面 40px 是一片空白，看着像渲染坏了。
+    pops = []
+    for r in rows:
+        try:
+            pops.append(float(r.get("pop")))
+        except (TypeError, ValueError):
+            pops.append(None)
+    real_pops = [p for p in pops if p is not None]
+    max_pop = max(real_pops) if real_pops else 0.0
+    has_rain = max_pop > 0
+
+    chart_bottom = 62 if has_rain else 74
+
+    def ty(t):
+        return chart_bottom - (t - tmin) / (tmax - tmin) * (chart_bottom - chart_top)
+
+    # ---- 温度折线 ----
+    pts = [(xs[i], ty(temps[i])) for i in range(n) if temps[i] is not None]
+    if len(pts) >= 2:
+        d.line(pts, fill=0, width=2)
+    for (px, py) in pts:
+        d.rectangle([px - 1.5, py - 1.5, px + 1.5, py + 1.5], fill=0)
+
+    # 左轴：最高 / 最低
+    _ink_right(d, "%d" % round(tmax), f_axis, chart_top - 1, 22)
+    _ink_right(d, "%d" % round(tmin), f_axis, chart_bottom - 9, 22)
+
+    # ---- 降水概率柱 ----
+    d.line([(0, chart_bottom + 2), (W, chart_bottom + 2)], fill=0, width=1)
+    if has_rain:
+        for i, pop in enumerate(pops):
+            if pop is None:
+                continue
+            pop = max(0.0, min(100.0, pop))
+            h = pop / 100.0 * max_bar
+            if pop > 0 and h < 1:
+                h = 1
+            cx = xs[i]
+            d.rectangle([cx - 5.5, base_y - h, cx + 5.5, base_y], fill=0)
+            if pop >= 40:
+                _ink_center(d, "%d" % round(pop), f_axis, base_y - h - 10, cx)
+    else:
+        # 没降水就写清楚，不让下半屏空着。
+        # 文字放在分隔线和横轴之间 —— 不能压曲线（曲线最低到 chart_bottom）。
+        _ink_center(d, "未来 12 小时无降水", f_sub, chart_bottom + 12, W // 2)
+
+    # ---- 横轴时间 ----
+    marks = list(range(0, n, 3))
+    if n - 1 not in marks:
+        marks.append(n - 1)
+    for i in marks:
+        hh = rows[i].get("hour")
+        if hh is None:
+            continue
+        _ink_center(d, "%d时" % hh, f_axis, 110, xs[i])
+
+    return renderer.downsample(crisp), [], None
+

@@ -202,7 +202,10 @@ def _fetch(lat, lon, city):
             "longitude": round(float(lon), 4),
             "current": "temperature_2m,weather_code,relative_humidity_2m",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min",
+            # 逐小时页要的数据：温度曲线 + 降水概率。
+            "hourly": "temperature_2m,precipitation_probability",
             "forecast_days": 3,
+            "forecast_hours": 24,
             "timezone": "auto",
         },
         timeout=12,
@@ -223,12 +226,46 @@ def _fetch(lat, lon, city):
                 "tmin": _num(tmins[i]) if i < len(tmins) else "",
             }
         )
+    # ---- 逐小时：从「当前这一小时」起取 12 个点 ----
+    #
+    # open-meteo 的 hourly.time 是当地时间的 ISO 串（timezone=auto）。
+    # 起点按**本机当前小时**找，而不是取数组开头 —— 数组头是当天 00:00，
+    # 拿 00:00 起 12 个点等于「过去 12 小时」，不是预报。
+    hourly = data.get("hourly") or {}
+    h_times = hourly.get("time") or []
+    h_temps = hourly.get("temperature_2m") or []
+    h_pops = hourly.get("precipitation_probability") or []
+    hourly_rows = []
+    if h_times:
+        now_h = datetime.now().replace(minute=0, second=0, microsecond=0)
+        start = 0
+        for i, t in enumerate(h_times):
+            try:
+                dt = datetime.strptime(str(t)[:13], "%Y-%m-%dT%H")
+            except (TypeError, ValueError):
+                continue
+            if dt >= now_h:
+                start = i
+                break
+        for i in range(start, min(start + 12, len(h_times))):
+            try:
+                dt = datetime.strptime(str(h_times[i])[:13], "%Y-%m-%dT%H")
+            except (TypeError, ValueError):
+                continue
+            hourly_rows.append({
+                "time": str(h_times[i]),
+                "hour": dt.hour,
+                "temp": _num(h_temps[i]) if i < len(h_temps) else "",
+                "pop": _num(h_pops[i]) if i < len(h_pops) else "",
+            })
+
     return {
         "city": city,
         "temp": _num(cur.get("temperature_2m")),
         "code": cur.get("weather_code"),
         "humidity": _num(cur.get("relative_humidity_2m")),
         "days": days,
+        "hourly": hourly_rows,
     }
 
 

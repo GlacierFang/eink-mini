@@ -69,6 +69,15 @@ PAGES = [
         "fields": ["city"],
     },
     {
+        "id": "hourly",
+        "type": "bitmap",
+        "title": "逐小时",
+        "label": "HOURLY",
+        "desc": "未来 12 小时的温度走势和降水概率，服务端渲染成位图下发。"
+                "和「天气」页并存，两页内容不混；城市跟随天气页的设置。",
+        "fields": [],
+    },
+    {
         "id": "calendar",
         "type": "bitmap",
         "title": "月历",
@@ -93,7 +102,7 @@ _cache_lock = threading.Lock()
 
 
 def _cache_key(page_id):
-    if page_id == "weather":
+    if page_id in ("weather", "hourly"):
         # 天气缓存的取数时间是缓存键：数据没更新就不重画
         return (page_id, "weather", weather.get_weather_stamp())
     if page_id == "calendar":
@@ -118,6 +127,9 @@ def render_page(page_id):
     if page_id == "weather":
         cfg = config_store.get_config()
         layers = pages.render_weather(weather.get_weather(), cfg["city"])
+    elif page_id == "hourly":
+        cfg = config_store.get_config()
+        layers = pages.render_hourly(weather.get_weather(), cfg["city"])
     elif page_id == "calendar":
         layers = pages.render_calendar()
     elif page_id == "almanac":
@@ -222,9 +234,9 @@ def _page_version(page_id):
     if not entry:
         return 0
     cfg = config_store.get_config()
-    if page_id == "weather":
-        seed = "weather|%s|%.4f|%.4f|%d" % (
-            cfg["city"], cfg["lat"], cfg["lon"], weather.get_weather_stamp()
+    if page_id in ("weather", "hourly"):
+        seed = "%s|%s|%.4f|%.4f|%d" % (
+            page_id, cfg["city"], cfg["lat"], cfg["lon"], weather.get_weather_stamp()
         )
     elif page_id == "calendar":
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
@@ -282,10 +294,10 @@ def page_bin(page_id):
     if entry["type"] != "bitmap":
         return Response(status=400)
     try:
-        crisp, icon_specs = render_page(page_id)
+        crisp, icon_specs, tone = render_page(page_id)
     except KeyError:
         return Response(status=404)
-    data = renderer.frame_from_page(crisp, icon_specs)
+    data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
     resp = Response(data, mimetype="application/octet-stream")
     resp.headers["Content-Length"] = str(len(data))
     device_state.record(
@@ -306,14 +318,14 @@ def preview_png(page_id):
     if entry["type"] in ("native", "timer"):
         return _native_preview(page_id)
     try:
-        crisp, icon_specs = render_page(page_id)
+        crisp, icon_specs, tone = render_page(page_id)
     except KeyError:
         return Response(status=404)
     if request.args.get("view") == "gray":
         # 量化前的灰度中间态，只为调试
         return Response(renderer.image_to_png(crisp), mimetype="image/png")
     return Response(
-        renderer.image_to_png(renderer.page_view(crisp, icon_specs)),
+        renderer.image_to_png(renderer.page_view(crisp, icon_specs, tone=tone)),
         mimetype="image/png",
     )
 

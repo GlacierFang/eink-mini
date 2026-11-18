@@ -267,7 +267,7 @@ def to_mask(img, mode=None, threshold=None, size=None, phase=(0, 0)):
 
 
 def page_mask(crisp, icons=None, mode=None, threshold=None,
-              dither_mode=None, dither_threshold=None):
+              dither_mode=None, dither_threshold=None, tone=None):
     """页面清晰层 + 图标 -> 一张掩码。
 
     icons 是 (ox, oy, crisp_local, tone_local) 的列表。
@@ -305,6 +305,19 @@ def page_mask(crisp, icons=None, mode=None, threshold=None,
                     continue
                 if crow[x] or (trow is not None and trow[x]):
                     prow[px] = True
+
+    # 页面级灰阶层：整页一块灰度画布，走有序抖动。
+    # 图标的灰阶层只能待在 28x28 的局部框里 —— 页面级的浅色元素
+    # （比如周末的浅灰日号）没有别的入口。
+    if tone is not None:
+        tmask = to_mask(tone, dither_mode, dither_threshold,
+                        size=(W, H), phase=(0, 0))
+        for y in range(H):
+            prow = mask[y]
+            trow = tmask[y]
+            for x in range(W):
+                if trow[x]:
+                    prow[x] = True
     return mask
 
 
