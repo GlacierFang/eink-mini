@@ -85,7 +85,7 @@ def render_weather(weather, fallback_city="城市"):
         _ink_right(d, "湿度 " + hum + "%", renderer.load_font(12), num_top + 22, W - 8)
 
     # ---- 分隔线 ----
-    d.line([(0, 52), (W, 52)], fill=0, width=1)
+    d.line([(0, 50), (W, 50)], fill=0, width=1)
 
     # ---- 下半区：三天预报 ----
     days = weather.get("days") or []
@@ -96,19 +96,19 @@ def render_weather(weather, fallback_city="城市"):
         cx = margin + col_w * (i + 0.5)
         kind = icons.kind_for(day.get("code"))
         if kind:
-            icons.draw_icon(img, kind, cx - icons.SIZE / 2, 58)
+            icons.draw_icon(img, kind, cx - icons.SIZE / 2, 52)
 
         tmax = str(day.get("tmax") or "")
         tmin = str(day.get("tmin") or "")
         if tmax:
             _ink_center(d, "↑" + tmax + "°", f, 82, cx)
         if tmin:
-            _ink_center(d, "↓" + tmin + "°", f, 96, cx)
+            _ink_center(d, "↓" + tmin + "°", f, 94, cx)
 
         date = str(day.get("date") or "")
         label = (date[8:10] + "日") if len(date) >= 10 else date
         if label:
-            _ink_center(d, label, f, 110, cx)
+            _ink_center(d, label, f, 106, cx)
     return img
 
 

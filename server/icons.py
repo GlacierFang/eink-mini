@@ -1,15 +1,27 @@
-"""天气图标：程序化手绘的像素画。
+"""天气图标：字形 + 手绘混合。
 
-点阵字体里没有 ☀ 🌧 ☁ 这类符号，Unicode 渲染出来是豆腐块，
-所以图标全部用 PIL 在 20x20 的 1bpp 画布上按像素手绘。
+1bpp 小图标的三条命门（踩过才知道）：
 
-每种图标占满 20x20，同一套比例：云在上、降水在下、闪电居中偏下。
-闪电是逐像素点阵画的 —— 用多边形画出来是一条斜杠，不像闪电。
+1. **字形可以直接用，但别缩放**。Noto Sans CJK 自带 ☀（U+2600），
+   实心圆盘 + 12 根等长短方块光芒，是专业设计的形状。
+   手画试了五版：光芒一长就变成四尖星，一断就成了噪点，
+   腐蚀描边又变成圆顶土面包 —— 都不如字形。
+   但字形从 96px 缩到 24px 再阈值化，光芒会被筛成断点，出来是虚线圆。
+   所以：**按目标字号原生渲染进画布，不缩放**，
+   最终的黑白判定交给 image_to_1bpp 统一做。
+   ❄（U+2744）cmap 里有但渲染是豆腐块，所以雪花还是手绘。
+2. **1px 细斜线在点阵上碎成阶梯**，远看就是噪点。
+   只用横、竖、2x2 方块、多边形。
+3. **剪影要一眼不同**。雨雪雷都带云时，靠"竖条 / 实心十字 / Z 形折线"
+   三种骨架区分；云的圆弧高度也要不同，一样高就成了面包。
 """
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 
-SIZE = 20
+SIZE = 28
+
+GLYPH_FONT = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+SUN_GLYPH = "\u2600"
 
 # WMO 天气码 -> 图标种类
 _KIND = {
@@ -43,17 +55,7 @@ _KIND = {
     99: "hail",
 }
 
-# 闪电点阵：6 宽 8 高，(x, y) 相对左上角
-_BOLT = [
-    (4, 0), (5, 0),
-    (4, 1), (5, 1),
-    (3, 2), (4, 2), (5, 2),
-    (2, 3), (3, 3), (4, 3),
-    (3, 4), (4, 4),
-    (4, 5), (5, 5),
-    (3, 6), (4, 6),
-    (2, 7), (3, 7),
-]
+_font_cache = {}
 
 
 def kind_for(code):
@@ -66,86 +68,112 @@ def kind_for(code):
         return ""
 
 
-def _canvas():
-    # mode "1"：1 = 白，0 = 黑
-    return Image.new("1", (SIZE, SIZE), 1)
+def _blank():
+    """L 画布：0 = 黑，255 = 白。"""
+    return Image.new("L", (SIZE, SIZE), 255)
 
 
-def _sun(d, cx, cy, r, ray=3):
-    """太阳：实心圆 + 8 条光芒。"""
-    d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=0)
-    for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1)):
-        d.line(
-            (cx + dx * (r + 1), cy + dy * (r + 1), cx + dx * (r + ray), cy + dy * (r + ray)),
-            fill=0,
-            width=1,
-        )
+def _sun_glyph(d, px, cx, cy):
+    """把 ☀ 字形按 px 号原生渲染进画布，居中在 (cx, cy)。
+
+    不缩放：缩小会把光芒筛成断点。取不到字形就返回 False。
+    """
+    if px not in _font_cache:
+        try:
+            _font_cache[px] = ImageFont.truetype(GLYPH_FONT, px)
+        except OSError:
+            _font_cache[px] = None
+    font = _font_cache[px]
+    if font is None:
+        return False
+    bb = d.textbbox((0, 0), SUN_GLYPH, font=font)
+    d.text((cx - (bb[0] + bb[2]) // 2, cy - (bb[1] + bb[3]) // 2),
+           SUN_GLYPH, font=font, fill=0)
+    return True
 
 
-def _cloud(d, x0=2, x1=18, top=3):
-    """云：三段圆弧 + 补底，形成一朵实心云。"""
-    d.ellipse((x0, top + 3, x0 + 9, top + 11), fill=0)
-    d.ellipse((x1 - 11, top, x1, top + 8), fill=0)
-    d.rectangle((x0, top + 7, x1, top + 11), fill=0)
+def _cloud(d, x0=3, x1=25, top=6, bottom=20):
+    """实心云：三段**高度不同**的圆弧 + 平底。
+
+    三段弧顶分别在 top+10 / top / top+12 —— 一样高就成了面包。
+    """
+    d.ellipse((x0, bottom - 10, x0 + 11, bottom + 1), fill=0)      # 左弧
+    d.ellipse((x0 + 3, top, x0 + 17, bottom + 1), fill=0)           # 中弧（最高）
+    d.ellipse((x1 - 10, bottom - 8, x1 + 1, bottom + 1), fill=0)    # 右弧
+    d.rectangle((x0, bottom - 5, x1, bottom + 1), fill=0)           # 平底
 
 
-def _drops(d, xs, y0, y1):
-    for x in xs:
-        d.line((x, y0, x - 1, y1), fill=0, width=1)
-
-
-def _flakes(d, xs, cy):
-    for x in xs:
-        d.line((x - 2, cy, x + 2, cy), fill=0, width=1)
-        d.line((x, cy - 2, x, cy + 2), fill=0, width=1)
+def _star(d, cx, cy, r=2):
+    """实心小雪花：粗十字，臂宽 2px。1px 细十字在小图上认不出来。"""
+    d.rectangle((cx - r, cy - 1, cx + r, cy), fill=0)
+    d.rectangle((cx - 1, cy - r, cx, cy + r), fill=0)
 
 
 def _bolt(d, x=8, y=12):
-    for dx, dy in _BOLT:
-        d.point((x + dx, y + dy), fill=0)
+    """闪电：一次多边形画成的 Z 字。
+
+    矩形一笔一笔画会碎成一串小方块；多边形一次成形才连贯。
+    下端收成尖 —— 收成弧就读成钩子。
+    """
+    d.polygon(
+        [
+            (x + 7, y), (x + 12, y),        # 上横条
+            (x + 7, y + 7), (x + 11, y + 7),  # 中段
+            (x + 1, y + 15), (x + 5, y + 9),  # 收尖的下端
+            (x + 1, y + 9),
+        ],
+        fill=0,
+    )
 
 
 def _draw(kind):
-    img = _canvas()
+    img = _blank()
     d = ImageDraw.Draw(img)
+
     if kind == "sun":
-        _sun(d, 10, 10, 4, ray=3)
+        if not _sun_glyph(d, 26, 14, 14):
+            d.ellipse((7, 7, 21, 21), fill=0)
     elif kind == "sun_cloud":
-        # 太阳躲在小云后面，只露出左上角
-        _sun(d, 5, 5, 2, ray=2)
-        _cloud(d, x0=4, x1=19, top=9)
+        if not _sun_glyph(d, 15, 8, 8):
+            d.ellipse((4, 4, 12, 12), fill=0)
+        _cloud(d, x0=8, x1=27, top=13, bottom=26)
     elif kind == "cloud":
         _cloud(d)
     elif kind == "overcast":
-        # 阴：压得很低的一片厚云，没有起伏的轮廓
-        d.ellipse((0, 4, 20, 12), fill=0)
-        d.rectangle((0, 8, 20, 12), fill=0)
+        # 两朵云左右分置：主云在右，左边露一朵小云。
+        # 叠在正上方会连成一个雪人。
+        _cloud(d, x0=8, x1=26, top=6, bottom=20)
+        _cloud(d, x0=0, x1=14, top=12, bottom=23)
     elif kind == "fog":
-        _cloud(d, x0=2, x1=17, top=1)
-        d.line((4, 15, 16, 15), fill=0, width=1)
-        d.line((6, 18, 16, 18), fill=0, width=1)
+        # 雾没有云 —— 雾本来就是横的，三道横线最像
+        d.rectangle((2, 6, 25, 8), fill=0)
+        d.rectangle((5, 12, 22, 14), fill=0)
+        d.rectangle((2, 18, 25, 20), fill=0)
     elif kind == "rain":
-        _cloud(d)
-        _drops(d, (4, 10, 16), 15, 19)
+        _cloud(d, x0=3, x1=25, top=3, bottom=17)
+        for x in (8, 14, 20):
+            d.rectangle((x, 20, x + 1, 25), fill=0)
     elif kind == "rain_heavy":
-        _cloud(d)
-        _drops(d, (3, 8, 13, 17), 15, 19)
+        _cloud(d, x0=3, x1=25, top=3, bottom=17)
+        for x in (5, 11, 17, 22):
+            d.rectangle((x, 20, x + 1, 25), fill=0)
     elif kind == "sleet":
-        _cloud(d)
-        _drops(d, (4, 16), 15, 19)
-        _flakes(d, (10,), 17)
+        _cloud(d, x0=3, x1=25, top=3, bottom=17)
+        for x in (6, 20):
+            d.rectangle((x, 20, x + 1, 25), fill=0)
+        _star(d, 13, 23)
     elif kind == "snow":
-        _cloud(d)
-        _flakes(d, (4, 10, 16), 17)
+        _cloud(d, x0=3, x1=25, top=3, bottom=17)
+        for x in (7, 14, 21):
+            _star(d, x, 23)
     elif kind == "thunder":
-        # 云抬高一点，给闪电腾出位置
-        _cloud(d, x0=2, x1=18, top=0)
+        _cloud(d, x0=3, x1=25, top=0, bottom=11)
         _bolt(d)
     elif kind == "hail":
-        _cloud(d, x0=2, x1=18, top=0)
+        _cloud(d, x0=3, x1=25, top=0, bottom=11)
         _bolt(d)
-        d.ellipse((1, 16, 4, 19), fill=0)
-        d.ellipse((15, 16, 18, 19), fill=0)
+        d.rectangle((2, 24, 4, 27), fill=0)
+        d.rectangle((23, 24, 26, 27), fill=0)
     else:
         return None
     return img
@@ -156,6 +184,6 @@ def draw_icon(canvas, kind, x, y):
     img = _draw(kind)
     if img is None:
         return False
-    mask = ImageOps.invert(img.convert("L"))
+    mask = img.point(lambda v: 255 if v < 128 else 0)
     canvas.paste(Image.new("L", (SIZE, SIZE), 0), (int(x), int(y)), mask)
     return True
