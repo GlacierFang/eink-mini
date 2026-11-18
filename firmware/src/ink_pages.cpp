@@ -7,10 +7,24 @@
 
 static const char* WEEKDAY[7] = { "SUN","MON","TUE","WED","THU","FRI","SAT" };
 
+// 数码管减号（中横一段）。
+// 没校时时用它画 --:--，不要画 1970-01-01。
+static void drawSevenDash(InkCanvas& c, int x, int y, int w, int h)
+{
+  int t = h / 12;
+  if (t < 2) t = 2;
+  int midY = y + h / 2 - t / 2;
+  c.fillRect(x + t, midY, w - 2 * t, t, true);
+}
+
 void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
                          int pageIndex, int pageCount)
 {
   c.clear();
+
+  // epoch == 0 表示还没校时（SNTP 和 HTTP Date 都没成功）。
+  // 这时候画 --:-- 和 NO TIME 提示，不要画 1970-01-01。
+  bool noTime = (epoch == 0);
 
   // epoch 一律按 UTC 存；本地时间由固件自己加时区偏移，不依赖系统 TZ 设置
   time_t t = (time_t)(epoch + INK_TZ_OFFSET_SEC);
@@ -21,9 +35,13 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
   int mm = tmv.tm_min;
   int wd = tmv.tm_wday;
 
-  // 顶部：日期 + 星期
+  // 顶部：日期 + 星期（没校时改成提示）
   char top[48];
-  snprintf(top, sizeof(top), "%04d-%02d-%02d  %s", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, WEEKDAY[wd]);
+  if (noTime) {
+    snprintf(top, sizeof(top), "NO TIME - CHECK WIFI");
+  } else {
+    snprintf(top, sizeof(top), "%04d-%02d-%02d  %s", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, WEEKDAY[wd]);
+  }
   c.drawText(6, 5, top, true, 1);
 
   // 中部：七段大字时间
@@ -35,7 +53,8 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
   int digits[4] = { hh / 10, hh % 10, mm / 10, mm % 10 };
   int x = x0;
   for (int i = 0; i < 4; i++) {
-    c.drawSevenDigit(x, y0, digits[i], dw, dh, true);
+    if (noTime) drawSevenDash(c, x, y0, dw, dh);
+    else        c.drawSevenDigit(x, y0, digits[i], dw, dh, true);
     x += dw + gap;
     if (i == 1) {
       c.drawSevenColon(x + 2, y0, dh, true);
@@ -45,7 +64,8 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
 
   // 右侧：秒 + 标签
   char lab[48];
-  snprintf(lab, sizeof(lab), "%02dS", tmv.tm_sec);
+  if (noTime) snprintf(lab, sizeof(lab), "--");
+  else        snprintf(lab, sizeof(lab), "%02dS", tmv.tm_sec);
   c.drawText(INK_W - 46, y0 + 2, lab, true, 2);
   if (pageLabel && pageLabel[0]) {
     c.drawTextClipped(INK_W - 78, y0 + 26, 72, pageLabel, true, 1);

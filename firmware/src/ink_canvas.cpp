@@ -32,7 +32,16 @@ bool InkCanvas::pxIsBlack(int x, int y) const
 
 void InkCanvas::fillRect(int x, int y, int w, int h, bool black)
 {
-  for (int j = 0; j < h; j++) vLine(x, y + j, w, black);
+  // 循环轴原来是反的：for j < h 每次画一列 w 像素高，
+  // 结果画出来是 1 像素宽的竖条，不是 w 宽 h 高的矩形。
+  //
+  // drawRect 用的是 hLine + vLine，语义是对的 —— 两个函数不一致，
+  // fillRect 这边是错的。后果：数码管的 7 根段全成竖线，
+  // 时钟页数字、冒号、页脚方块、自检棋格全是竖条。
+  //
+  // 主机上编译 ink_canvas.cpp + ink_pages.cpp 渲染出图发现的。
+  // CI 编译查不出 —— 语法没错，逻辑错。
+  for (int j = 0; j < w; j++) vLine(x + j, y, h, black);
 }
 
 void InkCanvas::drawRect(int x, int y, int w, int h, bool black)

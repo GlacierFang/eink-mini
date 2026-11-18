@@ -38,6 +38,26 @@ static uint32_t g_lastManifestMs = 0;
 static uint32_t g_lastClockSec = 0;
 static uint32_t g_lastPageFetchMs = 0;
 static bool     g_timeOk = false;
+// 切页 / 配网完成 / 首次上电时置 true，立即重绘。
+//
+// 以前靠 g_lastPageFetchMs = 0 凑「毫秒差 > 30 秒」，那个条件在开机
+// 前 30 秒内恒为假 —— 那时切到天气页毫无反应。非 bitmap 页更是完全
+// 不走那条分支，状态一变就没画面。
+static bool     g_dirtyPage = true;
+// 计时器页的秒数单独记。跟时钟页共用一个变量时两边语义不同
+// （一个是 epoch，一个是剩余秒），切页容易漏画。
+static uint32_t g_lastTimerSec = 0;
+
+// 当前时间。没校时返回 0，渲染器会画成 --:--。
+//
+// 不用 g_net.timeValid() 判断 —— 那个标志只反映 syncTime() 那 12 秒
+// 窗口内有没有成功。lwIP 的 SNTP 之后自己还会重试，time() 一旦被同步
+// 就是对的。所以直接看 epoch 是否合理（2020-01-01 之后）。
+static uint32_t currentEpoch()
+{
+  uint32_t ep = currentEpoch();
+  return (ep > 1700000000UL) ? ep : 0UL;
+}
 
 // 上电自检：画一张带信息与黑白棋格的测试画面，肉眼确认不反色
 static void renderSelfTest(InkCanvas& c)
@@ -132,6 +152,8 @@ static void gotoPage(int idx)
   g_pageIndex = idx;
   g_lastPageFetchMs = 0;   // 立即刷新
   g_lastClockSec = 0;      // 切回时钟页立刻重画，不等下一秒
+  g_lastTimerSec = 0;
+  g_dirtyPage = true;      // 立刻重绘
 }
 
 static void refreshManifestIfDue()
@@ -142,6 +164,7 @@ static void refreshManifestIfDue()
   if (!g_net.connected()) return;
   if (g_client.fetchManifest(g_pages)) {
     if (g_pageIndex >= g_pages.count) g_pageIndex = 0;
+    g_dirtyPage = true;   // 清单可能变了，重画一次当前页
   }
 }
 
@@ -171,18 +194,21 @@ static void handleKeys()
         switch (ev) {
           case INK_EV_SHORT:
             g_timer.toggle();          // 开始 / 暂停 / 继续 / DONE 后重开
-            g_lastClockSec = 0;        // 立刻重画
+            g_lastTimerSec = 0;        // 立刻重画
+            g_dirtyPage = true;
             Serial.printf("[timer] 短按 -> state=%d 剩余 %lus\n",
                           (int)g_timer.state(), (unsigned long)g_timer.remainingSec());
             break;
           case INK_EV_DOUBLE:
             g_timer.cyclePreset();     // 换预设（RUNNING 时忽略）
-            g_lastClockSec = 0;
+            g_lastTimerSec = 0;        // 立刻重画
+            g_dirtyPage = true;
             Serial.printf("[timer] 双击 -> 预设 %d 分钟\n", g_timer.presetMinutes());
             break;
           case INK_EV_LONG:
             g_timer.reset();            // 重置
-            g_lastClockSec = 0;
+            g_lastTimerSec = 0;        // 立刻重画
+            g_dirtyPage = true;
             Serial.println("[timer] 长按 -> 重置");
             break;
           default: break;
@@ -200,6 +226,10 @@ static void handleKeys()
             g_net.runConfigPortal();
             g_net.begin();
             g_lastManifestMs = 0;
+          // 配网完必须重新校时。原来只在 setup 里校过一次，
+          // 配完网 g_timeOk 还是 false，时钟页会一直停在 --:--。
+          g_timeOk = g_net.syncTime();
+          g_dirtyPage = true;
             break;
           default: break;
         }
@@ -245,43 +275,64 @@ void loop()
   uint32_t now = millis();
   refreshManifestIfDue();
 
-  bool isClock = true;
+  // 页面类型判断。
+  //
+  // timer 是 native 的子类型 —— 设备本地渲染，不拉位图。只看
+  // type == "native" 会把它当 bitmap 页，每 30 秒去拉 /api/page/timer.bin（404）。
+  //
+  // g_pages.count == 0 表示 manifest 还没拉到（没配网、或拉失败）。
+  // 这时也要显示时钟页，不能停在自检画面。
+  bool isLocal = true;
   bool isTimer = false;
   if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
     const char* t = g_pages.items[g_pageIndex].type;
-    // timer 是一种 native 子类型 —— 设备本地渲染，不拉位图。
-    // 判断只看 type 会把它当 bitmap 页，每 30 秒去拉 /api/page/timer.bin（404）。
-    isClock = (strcmp(t, "native") == 0 || strcmp(t, "timer") == 0);
     isTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
+    isLocal = (strcmp(t, "native") == 0 || strcmp(t, "timer") == 0);
   }
+
+  bool doRender = false;
+  bool doFull = false;
 
   if (isTimer) {
     // 计时器每秒重画，走局刷只脏数字区域。
     //
-    // 不依赖 g_timeOk：计时器用 millis()，没校过时照样能跑。
+    // 不依赖校时：计时器用 millis()，没校过时照样能跑。
     // 归零那一刻做一次全刷反色提醒（设备没有蜂鸣器，视觉是唯一提醒）。
     bool finished = g_timer.tick();
     uint32_t sec = g_timer.remainingSec();
-    if (sec != g_lastClockSec || finished) {
-      g_lastClockSec = sec;
-      renderCurrentPage();
-      g_display.push(g_canvas, finished);
+    if (sec != g_lastTimerSec || finished) {
+      g_lastTimerSec = sec;
+      doRender = true;
+      doFull = finished;
       if (finished) Serial.println("[timer] 计时结束");
     }
-  } else if (isClock && g_timeOk) {
-    // 翻页钟每秒重画一次，走局刷只脏数字区域
-    uint32_t sec = g_net.epoch();
+  } else if (isLocal) {
+    // 时钟页每秒重画一次，走局刷只脏数字区域。
+    //
+    // 不看 g_timeOk，看 epoch 本身：没校时时 currentEpoch() 返回 0，
+    // 渲染器画成 --:--。这样即使 SNTP 在 syncTime() 的 12 秒窗口之后
+    // 才成功，设备也能自己活过来，不用重启。
+    uint32_t sec = currentEpoch();
     if (sec != g_lastClockSec) {
       g_lastClockSec = sec;
-      renderCurrentPage();
-      g_display.push(g_canvas, false);
+      doRender = true;
     }
-  } else if (now - g_lastPageFetchMs > 30000UL) {
+  } else {
     // bitmap 页：30 秒拉一次
-    g_lastPageFetchMs = now;
-    if (renderCurrentPage()) {
-      g_display.push(g_canvas, false);
+    if (g_dirtyPage || (now - g_lastPageFetchMs) > 30000UL) {
+      g_lastPageFetchMs = now;
+      doRender = true;
     }
+  }
+
+  // 切页、配网完成、首次上电等状态变化：立刻重绘。
+  if (g_dirtyPage) {
+    g_dirtyPage = false;
+    doRender = true;
+  }
+
+  if (doRender && renderCurrentPage()) {
+    g_display.push(g_canvas, doFull);
   }
 
   // 局刷累计到一定时长，做一次全刷清残影
