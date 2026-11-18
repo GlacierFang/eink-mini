@@ -65,6 +65,15 @@ void InkKeys::update(int idx, int pin)
 
 bool InkKeys::poll(InkKey& key, InkKeyEvent& event)
 {
+  // 先采样引脚。
+  //
+  // 这里原来漏了这一步：update() 写好了但从来没人调，poll() 只读
+  // pendingEvent / pendingClickAt —— 那两个字段只由 update() 写。
+  // 结果是按键永远不产生事件，整机没有任何交互。
+  for (int i = 0; i < INK_KEY_COUNT; i++) {
+    update(i, PINS[i]);
+  }
+
   uint32_t now = millis();
 
   // 先看有没有已就绪的事件（长按/双击优先送出）

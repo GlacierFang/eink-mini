@@ -59,7 +59,8 @@ static void renderSelfTest(InkCanvas& c)
       c.fillRect(196 + i * 11, 40 + j * 11, 11, 11, black);
     }
   }
-  c.drawText(196, 126, "GRAY CHECK", true, 1);
+  // 屏高 128，字高 7。y=126 的话只剩 2 行可见，下半截被切掉。
+  c.drawText(196, 118, "GRAY CHECK", true, 1);
 }
 
 // 把当前页画进画布
@@ -75,23 +76,26 @@ static bool renderCurrentPage()
   }
 
   if (strcmp(curType, "bitmap") == 0) {
-    // bitmap 页：优先用缓存；缓存没有才去拉
+    // bitmap 页：先拉新帧，拉不到才回退缓存。
+    //
+    // 原来是「有缓存就直接用缓存」，缓存一旦有了就再也不拉新帧 ——
+    // 天气页会永远停在开机那一帧，30 秒刷新形同虚设。
+    // 拉取节流在 loop() 里做（30 秒一次），这里不用再管。
+    if (g_frameBuf && g_client.fetchPageFrame(curId, g_frameBuf, INK_FRAME_BYTES)) {
+      if (!g_pageCache[g_pageIndex]) g_pageCache[g_pageIndex] = (uint8_t*)malloc(INK_FRAME_BYTES);
+      if (g_pageCache[g_pageIndex]) {
+        memcpy(g_pageCache[g_pageIndex], g_frameBuf, INK_FRAME_BYTES);
+        g_pageCached[g_pageIndex] = true;
+      }
+      g_canvas.loadServerFrame(g_frameBuf, INK_FRAME_BYTES);
+      return true;
+    }
+    Serial.printf("[page] %s 拉取失败，回退缓存\n", curId);
     if (g_pageCached[g_pageIndex] && g_pageCache[g_pageIndex]) {
       g_canvas.loadServerFrame(g_pageCache[g_pageIndex], INK_FRAME_BYTES);
       return true;
     }
-    if (!g_frameBuf) return false;
-    if (!g_client.fetchPageFrame(curId, g_frameBuf, INK_FRAME_BYTES)) {
-      Serial.printf("[page] %s 拉取失败\n", curId);
-      return false;
-    }
-    if (!g_pageCache[g_pageIndex]) g_pageCache[g_pageIndex] = (uint8_t*)malloc(INK_FRAME_BYTES);
-    if (g_pageCache[g_pageIndex]) {
-      memcpy(g_pageCache[g_pageIndex], g_frameBuf, INK_FRAME_BYTES);
-      g_pageCached[g_pageIndex] = true;
-    }
-    g_canvas.loadServerFrame(g_frameBuf, INK_FRAME_BYTES);
-    return true;
+    return false;
   }
 
   // native 页：本地翻页钟
@@ -107,6 +111,7 @@ static void gotoPage(int idx)
   if (idx >= g_pages.count) idx = 0;
   g_pageIndex = idx;
   g_lastPageFetchMs = 0;   // 立即刷新
+  g_lastClockSec = 0;      // 切回时钟页立刻重画，不等下一秒
 }
 
 static void refreshManifestIfDue()

@@ -13,9 +13,34 @@
 #define INK_PIN_RST   10
 #define INK_PIN_BUSY  3
 #define INK_PIN_KEY_A 5
-// B 键 GPIO 待实物丝印最终确认（候选 GPIO0 / GPIO16 / GPIO17）
+// B 键：默认用板载 BOOT 键（GPIO9），零接线。
+//
+// 为什么不用 GPIO16：ESP32-C3 的 GPIO11~17 内部接 Flash，模块上
+// 根本没引出来。配成 GPIO16 会让固件连烧都烧不进去。
+// C3 Pro mini 上还空着、且没被占用的脚是 GPIO2 —— 想接第二颗外接
+// 微动开关就改成 2。
+//
+// 烧录前仍要量一下丝印：BOOT 键在不同板子上位置不一。
 #ifndef INK_PIN_KEY_B
-#define INK_PIN_KEY_B 16
+#define INK_PIN_KEY_B 9
+#endif
+
+// 引脚冲突在编译期拦住。
+// 配错一个脚的现象是「屏不亮」或「按键乱跳」，烧进去再查很费时间。
+#if (INK_PIN_KEY_A == INK_PIN_KEY_B)
+#error "INK_PIN_KEY_A 和 INK_PIN_KEY_B 不能是同一个脚"
+#endif
+#if (INK_PIN_KEY_A == INK_PIN_SCK) || (INK_PIN_KEY_A == INK_PIN_MISO) || \
+    (INK_PIN_KEY_A == INK_PIN_MOSI) || (INK_PIN_KEY_A == INK_PIN_CS) || \
+    (INK_PIN_KEY_A == INK_PIN_DC) || (INK_PIN_KEY_A == INK_PIN_RST) || \
+    (INK_PIN_KEY_A == INK_PIN_BUSY)
+#error "INK_PIN_KEY_A 和屏的引脚冲突"
+#endif
+#if (INK_PIN_KEY_B == INK_PIN_SCK) || (INK_PIN_KEY_B == INK_PIN_MISO) || \
+    (INK_PIN_KEY_B == INK_PIN_MOSI) || (INK_PIN_KEY_B == INK_PIN_CS) || \
+    (INK_PIN_KEY_B == INK_PIN_DC) || (INK_PIN_KEY_B == INK_PIN_RST) || \
+    (INK_PIN_KEY_B == INK_PIN_BUSY)
+#error "INK_PIN_KEY_B 和屏的引脚冲突"
 #endif
 
 // ================================================================ 画面几何

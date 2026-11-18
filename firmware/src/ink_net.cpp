@@ -170,6 +170,10 @@ bool InkNet::syncTime()
   http.setTimeout(INK_HTTP_TIMEOUT_MS);
   http.setConnectTimeout(8000);
   if (http.begin(url)) {
+    // HTTPClient 默认不收集响应头。不声明要哪个头，http.header() 永远
+    // 返回空串 —— 下面这条兜底校时路径从来没生效过。
+    const char* hdrKeys[] = {"Date"};
+    http.collectHeaders(hdrKeys, 1);
     int code = http.GET();
     String dateHdr = http.header("Date");
     if (code > 0 && dateHdr.length() > 0) {

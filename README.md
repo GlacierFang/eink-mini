@@ -44,10 +44,20 @@
 | RST | GPIO10 |
 | BUSY | GPIO3 |
 
-按键：一脚接 GPIO5，另一脚接 GND。固件用内部上拉。
+按键（A 键）：一脚接 GPIO5，另一脚接 GND。固件用内部上拉。
 
-第二颗按键（B 键）默认接 **GPIO16**，⚠️ 尚未按实物丝印确认（候选 GPIO0 / GPIO16 / GPIO17）。
-烧录前请量一下丝印，不对就改 `firmware/src/ink_config.h` 的 `INK_PIN_KEY_B` 重编。
+B 键用**板载 BOOT 键（GPIO9）**，零接线。
+
+> ⚠️ 之前配的是 GPIO16，那是错的：ESP32-C3 的 GPIO11~17 内部接 Flash，
+> 模块上根本没引出来，配成 16 固件连烧都烧不进去。
+> C3 Pro mini 上还空着、且没被占用的脚是 **GPIO2** —— 想接第二颗外接
+> 微动开关就改成 2（改 `firmware/src/ink_config.h` 的 `INK_PIN_KEY_B` 重编）。
+
+`ink_config.h` 里加了**编译期引脚冲突检查**：按键和屏的引脚撞车直接
+`#error`，不用烧进去才发现屏不亮。
+
+> BOOT 键在复位时按住会进下载模式。所以「长按 B 进配网」之后如果要
+> 重启，别一直按着 B。
 
 ## 编译（GitHub Actions，手动触发）
 
