@@ -1,4 +1,6 @@
-#include <Arduino.h>
+// 不用 <Arduino.h>：这个文件只用到 snprintf / gmtime_r / memset / uint32_t，
+// 全在标准头里。去掉它之后，主机上能直接编译这份渲染代码，
+// 输出和设备上逐像素一致（见 tools/host_render.cpp）。
 #include <stdio.h>
 #include "ink_pages.h"
 #include "ink_canvas.h"

@@ -59,6 +59,28 @@ B 键用**板载 BOOT 键（GPIO9）**，零接线。
 > BOOT 键在复位时按住会进下载模式。所以「长按 B 进配网」之后如果要
 > 重启，别一直按着 B。
 
+## 主机端渲染（不用硬件就能看画面）
+
+```bash
+firmware/tools/render_host.sh [输出目录]     # 默认 ../tmp-preview
+```
+
+`ink_canvas.cpp` + `ink_pages.cpp` 是纯逻辑，不依赖 Arduino API，
+所以能在 PC / Pi 上直接编译运行，画出来的就是设备上会显示的像素 ——
+逐像素一致，不是「长得像」。
+
+**用途**：
+
+- 版式验证：改完版式立刻出图，不用等硬件到货
+- 抓逻辑错：`fillRect` 那种语法没错但画错的 bug，只有出图才看得见
+- 回归对比：每次改渲染代码出一组图，肉眼比对
+
+输出 6 张：时钟（已校时 / 没校时）、计时器（READY / RUN / PAUSE / DONE）。
+
+自检画面在 `main.cpp` 里（依赖 `g_display` / `g_net` 全局状态），这个工具不渲染它。
+
+---
+
 ## 编译（GitHub Actions，手动触发）
 
 Actions 里点 **Run workflow** 手动触发。产物两处都能拿：
