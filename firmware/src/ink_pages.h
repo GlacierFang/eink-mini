@@ -20,5 +20,11 @@ struct InkPageList {
 void inkRenderClockPage(InkCanvas& c, uint32_t epoch, const char* pageLabel,
                          int pageIndex, int pageCount);
 
+// 本地计时器页
+void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
+                        uint32_t remainingSec, uint32_t totalSec,
+                        int presetMinutes, int presetIndex, int presetCount,
+                        int pageIndex, int pageCount);
+
 // 页脚指示条
 void inkRenderPageFooter(InkCanvas& c, int pageIndex, int pageCount, const char* label);

@@ -14,6 +14,7 @@
 #include "ink_net.h"
 #include "ink_client.h"
 #include "ink_pages.h"
+#include "ink_timer.h"
 
 void inkClientBindNet(InkNet* n);
 
@@ -28,6 +29,8 @@ static InkCanvas  g_canvas;
 static uint8_t* g_pageCache[INK_MAX_PAGES] = {nullptr};
 static bool     g_pageCached[INK_MAX_PAGES] = {false};
 static uint8_t* g_frameBuf = nullptr;
+
+static InkTimer   g_timer;
 
 static InkPageList g_pages;
 static int      g_pageIndex = 0;
@@ -98,7 +101,24 @@ static bool renderCurrentPage()
     return false;
   }
 
-  // native 页：本地翻页钟
+  // native 页：本地渲染。clock 和 timer 走不同的渲染器。
+  if (strcmp(curId, "timer") == 0) {
+    // 计时器用 millis()，不依赖校时 —— 没校过时照样能跑。
+    const char* st = "READY";
+    switch (g_timer.state()) {
+      case INK_TIMER_RUNNING: st = "RUN";    break;
+      case INK_TIMER_PAUSED:  st = "PAUSE";  break;
+      case INK_TIMER_DONE:    st = "DONE";   break;
+      default:                st = "READY";  break;
+    }
+    inkRenderTimerPage(g_canvas, st,
+                       g_timer.remainingSec(), g_timer.totalSec(),
+                       g_timer.presetMinutes(), g_timer.presetIndex(),
+                       g_timer.presetCount(),
+                       g_pageIndex, g_pages.count);
+    return true;
+  }
+
   uint32_t ep = g_net.epoch();
   inkRenderClockPage(g_canvas, ep, curTitle, g_pageIndex, g_pages.count);
   return true;
@@ -142,20 +162,47 @@ static void handleKeys()
         default: break;
       }
     } else if (key == INK_KEY_B) {
-      switch (ev) {
-        case INK_EV_SHORT:
-          g_lastPageFetchMs = 0;                                // 短按：刷新当前页
-          break;
-        case INK_EV_DOUBLE:
-          gotoPage(0);                                           // 双击：回第一页
-          break;
-        case INK_EV_LONG:
-          Serial.println("[key] B 长按：进入配置模式");
-          g_net.runConfigPortal();
-          g_net.begin();
-          g_lastManifestMs = 0;
-          break;
-        default: break;
+      // 计时器页上 B 键是计时器专用；其它页是原来的行为。
+      bool onTimer = false;
+      if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
+        onTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
+      }
+      if (onTimer) {
+        switch (ev) {
+          case INK_EV_SHORT:
+            g_timer.toggle();          // 开始 / 暂停 / 继续 / DONE 后重开
+            g_lastClockSec = 0;        // 立刻重画
+            Serial.printf("[timer] 短按 -> state=%d 剩余 %lus\n",
+                          (int)g_timer.state(), (unsigned long)g_timer.remainingSec());
+            break;
+          case INK_EV_DOUBLE:
+            g_timer.cyclePreset();     // 换预设（RUNNING 时忽略）
+            g_lastClockSec = 0;
+            Serial.printf("[timer] 双击 -> 预设 %d 分钟\n", g_timer.presetMinutes());
+            break;
+          case INK_EV_LONG:
+            g_timer.reset();            // 重置
+            g_lastClockSec = 0;
+            Serial.println("[timer] 长按 -> 重置");
+            break;
+          default: break;
+        }
+      } else {
+        switch (ev) {
+          case INK_EV_SHORT:
+            g_lastPageFetchMs = 0;                                // 短按：刷新当前页
+            break;
+          case INK_EV_DOUBLE:
+            gotoPage(0);                                           // 双击：回第一页
+            break;
+          case INK_EV_LONG:
+            Serial.println("[key] B 长按：进入配置模式");
+            g_net.runConfigPortal();
+            g_net.begin();
+            g_lastManifestMs = 0;
+            break;
+          default: break;
+        }
       }
     }
   }
@@ -178,6 +225,7 @@ void setup()
 
   g_keys.begin();
   g_display.begin();
+  g_timer.init();
 
   g_net.begin();
   g_timeOk = g_net.syncTime();
@@ -198,11 +246,29 @@ void loop()
   refreshManifestIfDue();
 
   bool isClock = true;
+  bool isTimer = false;
   if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
-    isClock = (strcmp(g_pages.items[g_pageIndex].type, "native") == 0);
+    const char* t = g_pages.items[g_pageIndex].type;
+    // timer 是一种 native 子类型 —— 设备本地渲染，不拉位图。
+    // 判断只看 type 会把它当 bitmap 页，每 30 秒去拉 /api/page/timer.bin（404）。
+    isClock = (strcmp(t, "native") == 0 || strcmp(t, "timer") == 0);
+    isTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
   }
 
-  if (isClock && g_timeOk) {
+  if (isTimer) {
+    // 计时器每秒重画，走局刷只脏数字区域。
+    //
+    // 不依赖 g_timeOk：计时器用 millis()，没校过时照样能跑。
+    // 归零那一刻做一次全刷反色提醒（设备没有蜂鸣器，视觉是唯一提醒）。
+    bool finished = g_timer.tick();
+    uint32_t sec = g_timer.remainingSec();
+    if (sec != g_lastClockSec || finished) {
+      g_lastClockSec = sec;
+      renderCurrentPage();
+      g_display.push(g_canvas, finished);
+      if (finished) Serial.println("[timer] 计时结束");
+    }
+  } else if (isClock && g_timeOk) {
     // 翻页钟每秒重画一次，走局刷只脏数字区域
     uint32_t sec = g_net.epoch();
     if (sec != g_lastClockSec) {

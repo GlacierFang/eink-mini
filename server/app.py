@@ -56,6 +56,15 @@ PAGES = [
         "fields": ["device_title"],
     },
     {
+        "id": "timer",
+        "type": "timer",
+        "title": "计时器",
+        "label": "TIMER",
+        "desc": "设备本地倒计时。预设固定在固件里，不消耗服务端；"
+                "短按启停、双击换预设、长按重置。",
+        "fields": [],
+    },
+    {
         "id": "weather",
         "type": "bitmap",
         "title": "天气",
@@ -201,7 +210,9 @@ def manifest():
         # native 页由设备本地渲染，标题直接用配置里的 device_title，
         # 这样控制台改标题才会真的出现在屏上
         label = p["label"]
-        if p["type"] == "native":
+        # 只有 clock 页用配置里的 device_title。timer 是另一种 native 页，
+        # 标题固定 —— 用 device_title 会把时钟标题套到计时器上。
+        if p["type"] == "native" and p["id"] == "clock":
             label = cfg.get("device_title") or p["label"]
         pages_out.append(
             {

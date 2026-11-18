@@ -64,7 +64,7 @@
         <div class="card">
           <h2>{{ f.title }} <span class="muted">{{ f.label }}</span></h2>
           <p class="note">{{ f.desc }}</p>
-          {% if f.type == 'native' %}
+          {% if f.type == 'native' or f.type == 'timer' %}
           <div class="preview-wrap">
             <div class="preview-empty-static">设备本地渲染<br>这里看不到画面</div>
           </div>
