@@ -245,6 +245,21 @@ def page_bin(page_id):
     return resp
 
 
+# 预览的三种看法。默认给「人眼视图」——
+# 面板是单色的，屏上看到的层次来自黑色像素之间的物理缝隙，
+# 设备位图（纯黑白）不是屏上实际的样子。
+PREVIEW_VIEWS = ("eye", "device", "source")
+
+# 渲染核对页要对比的量化策略
+RENDER_MODES = (
+    ("硬阈值 165 —— 设备当前用的", "hard", renderer.DEFAULT_THRESHOLD),
+    ("硬阈值 128 —— 改之前的值，12px 小字在这里会断成虚线", "hard", 128),
+    ("硬阈值 190 —— 更粗，但小字开始发糊", "hard", 190),
+    ("Bayer 2x2 有序抖动", "bayer", renderer.DEFAULT_THRESHOLD),
+    ("Floyd-Steinberg 误差扩散", "floyd", renderer.DEFAULT_THRESHOLD),
+)
+
+
 @app.route("/preview/<page_id>.png")
 def preview_png(page_id):
     entry = _page_entry(page_id)
@@ -254,7 +269,51 @@ def preview_png(page_id):
         img = render_page(page_id)
     except KeyError:
         return Response(status=404)
+
+    view = request.args.get("view", "eye")
+    if view not in PREVIEW_VIEWS:
+        view = "eye"
+    mode = request.args.get("mode", "hard")
+    if mode not in renderer.DITHER_MODES:
+        mode = "hard"
+    try:
+        thr = int(request.args.get("thr", renderer.DEFAULT_THRESHOLD))
+    except (TypeError, ValueError):
+        thr = renderer.DEFAULT_THRESHOLD
+    thr = max(1, min(254, thr))
+
+    if view == "device":
+        img = renderer.device_view(img, mode, thr)
+    elif view == "source":
+        pass  # 原始灰度中间态
+    else:
+        img = renderer.perceived_view_full(img, mode, thr)
     return Response(renderer.image_to_png(img), mimetype="image/png")
+
+
+@app.route("/render-check/<page_id>")
+def render_check(page_id):
+    """渲染核对页：同一页在几种量化策略下的样子。
+
+    用来给 12px 小字定阈值策略 —— 墨水屏上每一个抖动噪点
+    都会让笔画看起来断续，所以不是「最好看的灰」，是「最少的灰」。
+    """
+    entry = _page_entry(page_id)
+    if not entry or entry["type"] != "bitmap":
+        return Response(status=404)
+    rows = []
+    for label, mode, thr in RENDER_MODES:
+        rows.append(
+            {
+                "label": label,
+                # 相对路径要多退一级：页面在 /eink-mini/render-check/xxx，
+                # 而预览在 /eink-mini/preview/xxx。写 preview/... 会解析成
+                # /eink-mini/render-check/preview/... -> 404。
+                "device": "../preview/%s.png?view=device&mode=%s&thr=%d" % (page_id, mode, thr),
+                "eye": "../preview/%s.png?view=eye&mode=%s&thr=%d" % (page_id, mode, thr),
+            }
+        )
+    return render_template("render_check.html", page_id=page_id, rows=rows)
 
 
 @app.route("/api/config", methods=["GET"])

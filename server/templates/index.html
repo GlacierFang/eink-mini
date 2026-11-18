@@ -14,6 +14,7 @@
   <span class="badge {{ 'ok' if device_online else 'dim' }}" id="badge-device">
     {{ '设备在线' if device_online else '设备离线' }}
   </span>
+  <a class="banner-link" href="render-check/weather">渲染核对</a>
 </header>
 
 <main>
@@ -69,9 +70,18 @@
             <div class="preview-empty-static">设备本地渲染<br>这里看不到画面</div>
           </div>
           {% else %}
-          <div class="preview-wrap">
-            <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview">
+          <div class="view-toggle" data-preview-toggle>
+            <button type="button" data-view="eye" class="active">人眼视图</button>
+            <button type="button" data-view="device">设备位图</button>
+            <button type="button" data-view="source">原始灰度</button>
+            <a class="link" href="render-check/{{ f.id }}">渲染核对 →</a>
           </div>
+          <div class="preview-wrap">
+            <img id="preview-{{ f.id }}" data-base="preview/{{ f.id }}.png"
+                 src="preview/{{ f.id }}.png?view=eye" alt="{{ f.id }} preview">
+          </div>
+          <p class="note">设备真正收到的是 1bpp 位图（纯黑白）。屏上的层次来自黑色像素之间的
+            物理缝隙，所以「屏上什么样」要看人眼视图。</p>
           {% endif %}
         </div>
 
@@ -159,6 +169,21 @@ function saveConfig(key) {
   });
 }
 
+// 预览的三种看法。人眼视图是默认 —— 设备位图不是屏上实际的样子。
+function setPreviewView(view) {
+  document.querySelectorAll('img[id^="preview-"]').forEach(function (img) {
+    img.src = img.dataset.base + '?view=' + view;
+  });
+  document.querySelectorAll('[data-preview-toggle] button[data-view]').forEach(function (b) {
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  try { localStorage.setItem('eink_view', view); } catch (e) {}
+}
+
+document.querySelectorAll('[data-preview-toggle] button[data-view]').forEach(function (b) {
+  b.addEventListener('click', function () { setPreviewView(b.dataset.view); });
+});
+
 document.querySelectorAll('button[data-save]').forEach(function (b) {
   b.addEventListener('click', function () { saveConfig(b.dataset.save); });
 });
@@ -176,6 +201,10 @@ window.addEventListener('hashchange', function () {
   var h = (location.hash || '').replace('#', '');
   if (h) switchTab(h);
 });
+
+var savedView = 'eye';
+try { savedView = localStorage.getItem('eink_view') || 'eye'; } catch (e) {}
+setPreviewView(savedView);
 </script>
 </body>
 </html>

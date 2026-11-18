@@ -214,6 +214,38 @@ button {
 }
 button:hover { background: rgba(31, 111, 235, .3); }
 
+
+/* 预览切换 */
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.view-toggle button {
+  padding: 4px 11px;
+  font-size: 12px;
+}
+.view-toggle button.active {
+  background: rgba(31, 111, 235, .42);
+  border-color: var(--accent);
+  color: #fff;
+}
+.view-toggle .link {
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+.banner-link {
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+  margin-left: 14px;
+}
+.banner-link:hover { text-decoration: underline; }
+
 .msg { font-size: 12px; min-height: 18px; margin-top: 6px; }
 .msg.ok { color: var(--ok); }
 .msg.bad { color: var(--bad); }
