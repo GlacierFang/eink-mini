@@ -35,7 +35,11 @@ static InkTimer   g_timer;
 static InkPageList g_pages;
 static int      g_pageIndex = 0;
 static uint32_t g_lastManifestMs = 0;
-static uint32_t g_lastClockSec = 0;
+// 时钟页按**分钟**重画。
+//
+// 原来按秒重画 —— 但屏上只显示 HH:MM，每秒的画面完全一样。
+// 等于每秒触发一次局刷，墨水屏残影会一直累积。
+static uint32_t g_lastClockMin = 0;
 static uint32_t g_lastPageFetchMs = 0;
 static bool     g_timeOk = false;
 // 切页 / 配网完成 / 首次上电时置 true，立即重绘。
@@ -91,11 +95,9 @@ static bool renderCurrentPage()
 {
   const char* curId = "";
   const char* curType = "native";
-  const char* curTitle = "";
   if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
     curId = g_pages.items[g_pageIndex].id;
     curType = g_pages.items[g_pageIndex].type;
-    curTitle = g_pages.items[g_pageIndex].title;
   }
 
   if (strcmp(curType, "bitmap") == 0) {
@@ -140,7 +142,7 @@ static bool renderCurrentPage()
   }
 
   uint32_t ep = g_net.epoch();
-  inkRenderClockPage(g_canvas, ep, curTitle, g_pageIndex, g_pages.count);
+  inkRenderClockPage(g_canvas, ep, g_pageIndex, g_pages.count);
   return true;
 }
 
@@ -151,7 +153,7 @@ static void gotoPage(int idx)
   if (idx >= g_pages.count) idx = 0;
   g_pageIndex = idx;
   g_lastPageFetchMs = 0;   // 立即刷新
-  g_lastClockSec = 0;      // 切回时钟页立刻重画，不等下一秒
+  g_lastClockMin = 0;      // 切回时钟页立刻重画，不等下一分钟
   g_lastTimerSec = 0;
   g_dirtyPage = true;      // 立刻重绘
 }
@@ -312,9 +314,10 @@ void loop()
     // 不看 g_timeOk，看 epoch 本身：没校时时 currentEpoch() 返回 0，
     // 渲染器画成 --:--。这样即使 SNTP 在 syncTime() 的 12 秒窗口之后
     // 才成功，设备也能自己活过来，不用重启。
-    uint32_t sec = currentEpoch();
-    if (sec != g_lastClockSec) {
-      g_lastClockSec = sec;
+    uint32_t ep = currentEpoch();
+    uint32_t minute = ep / 60UL;
+    if (minute != g_lastClockMin) {
+      g_lastClockMin = minute;
       doRender = true;
     }
   } else {

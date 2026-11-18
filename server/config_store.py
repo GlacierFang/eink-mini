@@ -3,7 +3,6 @@
 配置项：
   city          天气城市名（默认 北京）
   lat / lon     城市坐标（改城市时重新地理编码）
-  device_title  屏上标题，显示在设备时钟页右上角（仅 ASCII）
 """
 
 import json
@@ -17,7 +16,6 @@ DEFAULTS = {
     "city": "北京",
     "lat": 39.9075,
     "lon": 116.39723,
-    "device_title": "CLOCK",
 }
 
 _lock = threading.Lock()

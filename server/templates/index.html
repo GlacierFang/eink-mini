@@ -125,6 +125,8 @@
             画布和版式代码，所以像素和设备上的一致，不是「长得像」。
             画面上的时间是服务端当前时间（时区同样 +8），
             设备校时之后显示的也是这个时间。</p>
+          <p class="note">屏上只有<strong>日期 + 时间</strong>，没有标题、没有秒数、
+            没有状态文字 —— 干净点，别塞没用的信息。</p>
           {% else %}
           <div class="preview-wrap">
             <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview">

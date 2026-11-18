@@ -65,6 +65,61 @@
 > GPIO2 也是启动采样脚。固件开内部上拉，复位时保持高电平正常启动；
 > 但上电和复位的那一瞬间别按住 B 键。
 
+## 翻页钟（时钟页 / 计时器页）
+
+时钟页和计时器页都是**翻页钟**形态：大号印刷体数字，两个面板
+（小时 / 分钟），每个面板中间一道横穿的翻页缝。
+
+```
+[ 1 8 ]      [ 0 0 ]
+━━━━━━━━      ━━━━━━━━
+```
+
+**不是七段数码管。** 七段是计算器和仪表的形态，不是钟的形态。
+
+### 大号字模怎么来的
+
+`firmware/tools/gen_fonts.py` 从 TrueType 字体离线栅格化成 1bpp 点阵，
+生成 `src/ink_font_big.h` / `src/ink_font_big.cpp` 烧进固件。
+换字体或改尺寸就重跑：
+
+```bash
+cd firmware
+python3 tools/gen_fonts.py \
+    --font /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf \
+    --height 84 --aspect 0.543 \
+    --out-header src/ink_font_big.h --out-source src/ink_font_big.cpp
+```
+
+两个坑（都在脚本注释里写了）：
+
+- **量真实墨迹，不是 `font.getbbox()`。** getbbox 给的是 advance width
+  包络，含左右边距 —— 用它量宽度，`1` 会算成和 `0` 一样宽，渲染出来是个胖 1。
+- **基线要画在画布里面。** 数字字高约 0.71 em，基线画在画布顶部，
+  字的上半截直接被裁掉。
+
+翻页钟的规矩：**卡片一样宽，数字居中**。所有字形用同一个缩放系数，
+`1` 保持窄，不被拉胖。
+
+### 极性可切换
+
+`src/ink_config.h` 里 `INK_FLIP_INVERTED`：
+
+| 值 | 形态 |
+|---|---|
+| `0` | 白卡片 + 黑数字 + 白色翻页缝 |
+| `1`（默认） | 黑卡片 + 白数字 + 黑色翻页缝 |
+
+改这一行重编即可。两种极性**局刷难度相同** —— 数字变了总会有像素
+要由黑变白，选哪个不影响刷新策略。
+
+### 刷新节奏
+
+时钟页**按分钟重画**。屏上只显示 HH:MM，每秒的画面完全一样 ——
+按秒重画等于每秒触发一次局刷，墨水屏残影会一直累积。
+
+计时器页仍按秒重画（倒计时确实在变）。
+
 ## 主机端渲染（不用硬件就能看画面）
 
 ```bash
@@ -154,7 +209,7 @@ server/
   pages.py          天气 / 月历页面渲染
   weather.py        Open-Meteo 取数（后台线程 + 落盘缓存，渲染路径只读缓存）
   device_state.py   设备在线状态（最后活动、来源、计数，落盘）
-  config_store.py   配置存储（城市、坐标、屏幕标题）
+  config_store.py   配置存储（城市、坐标）
   templates/        控制台页面
   static/console.css 控制台样式（深色主题，沿用 petd 设计令牌）
   tools/check_frame.py  位序自检：把 .bin 解回图验证 1=黑
@@ -175,7 +230,7 @@ server/openclaw-eink-mini.service
 | GET / | 控制台（功能预览 + 配置 + 设备状态） |
 | GET /preview/{id}.png | 页面预览图 |
 | GET /api/config | 读配置 |
-| POST /api/config | 改城市 / 屏幕标题 |
+| POST /api/config | 改城市 |
 | GET /api/device | 设备在线状态 |
 
 页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`bitmap` = 服务端下发位图。

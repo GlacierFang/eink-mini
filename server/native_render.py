@@ -42,6 +42,7 @@ FRAME_BYTES = ROW * H
 SRC_FILES = [
     FW / "src" / "ink_canvas.cpp",
     FW / "src" / "ink_pages.cpp",
+    FW / "src" / "ink_font_big.cpp",
     FW / "tools" / "host_render.cpp",
 ]
 
@@ -88,6 +89,7 @@ def build():
                 "g++", "-std=c++11", "-O2", "-I", str(FW / "src"),
                 str(FW / "src" / "ink_canvas.cpp"),
                 str(FW / "src" / "ink_pages.cpp"),
+                str(FW / "src" / "ink_font_big.cpp"),
                 str(FW / "tools" / "host_render.cpp"),
                 "-o", str(tmp),
             ]
@@ -141,13 +143,8 @@ def frame_to_image(data):
 
 
 def _clock_kwargs():
-    import config_store
-
-    cfg = config_store.get_config()
-    label = (cfg.get("device_title") or "CLOCK")[:16]
     return {
         "epoch": int(time.time()),
-        "label": label,
         "pageIndex": CLOCK_INDEX,
         "pageCount": PAGE_COUNT,
     }

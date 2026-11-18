@@ -16,7 +16,7 @@
 //
 //   host_render frame <clock|timer> <输出文件> [键=值 ...]
 //       出设备帧（4736 字节，1=黑，MSB first，每行 37 字节）。
-//       可用键：epoch, label, state, remaining, total, preset,
+//       可用键：epoch, state, remaining, total, preset,
 //               presetIndex, pageIndex, pageCount
 //
 // 注意：自检画面在 main.cpp 里（依赖 g_display / g_net 全局状态），
@@ -81,7 +81,7 @@ static void renderSheet(const char* out)
   // 时钟页（已校时）
   {
     InkCanvas c;
-    inkRenderClockPage(c, FIXED_EPOCH, "CLOCK", 0, 4);
+    inkRenderClockPage(c, FIXED_EPOCH, 0, 4);
     snprintf(path, sizeof(path), "%s/host-clock.pgm", out);
     writePGM(path, c);
   }
@@ -89,7 +89,7 @@ static void renderSheet(const char* out)
   // 时钟页（没校时）—— epoch == 0 时渲染成 --:--
   {
     InkCanvas c;
-    inkRenderClockPage(c, 0, "CLOCK", 0, 4);
+    inkRenderClockPage(c, 0, 0, 4);
     snprintf(path, sizeof(path), "%s/host-clock-notime.pgm", out);
     writePGM(path, c);
   }
@@ -136,7 +136,6 @@ static const char* getStr(const char* key, const char* def)
 static int renderFrame(const char* page, const char* out, int argc, char** argv)
 {
   uint32_t epoch    = getU32("epoch", 0);
-  const char* label = getStr("label", "CLOCK");
   const char* state = getStr("state", "READY");
   uint32_t remain   = getU32("remaining", 900);
   uint32_t total    = getU32("total", 900);
@@ -149,7 +148,6 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
   for (int i = 0; i < argc; i++) {
     const char* a = argv[i];
     if (strncmp(a, "epoch=", 6) == 0)          epoch = getU32(a, epoch);
-    else if (strncmp(a, "label=", 6) == 0)     label = getStr(a, label);
     else if (strncmp(a, "state=", 6) == 0)     state = getStr(a, state);
     else if (strncmp(a, "remaining=", 10) == 0) remain = getU32(a, remain);
     else if (strncmp(a, "total=", 6) == 0)      total = getU32(a, total);
@@ -161,7 +159,7 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
 
   InkCanvas c;
   if (strcmp(page, "clock") == 0) {
-    inkRenderClockPage(c, epoch, label, pageIndex, pageCount);
+    inkRenderClockPage(c, epoch, pageIndex, pageCount);
   } else if (strcmp(page, "timer") == 0) {
     inkRenderTimerPage(c, state, remain, total, preset, presetIndex, 8,
                        pageIndex, pageCount);

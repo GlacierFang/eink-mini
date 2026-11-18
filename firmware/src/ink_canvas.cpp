@@ -1,6 +1,25 @@
 #include <string.h>
 #include "ink_canvas.h"
 #include "ink_font.h"
+#include "ink_font_big.h"
+
+// 画一个翻页钟大数字。
+//
+// 字模是 1 = 黑（和设备帧一致），画布是 1 = 白 —— 直接 setPx(black)
+// 就对了，不用翻转。
+void InkCanvas::drawBigGlyph(int x, int y, char c, bool black)
+{
+  const uint8_t* g = inkBigGlyph(c);
+  if (!g) return;
+  for (int row = 0; row < INK_BIG_H; row++) {
+    const uint8_t* r = g + row * INK_BIG_ROW_BYTES;
+    for (int col = 0; col < INK_BIG_W; col++) {
+      if ((r[col >> 3] >> (7 - (col & 7))) & 1) {
+        setPx(x + col, y + row, black);
+      }
+    }
+  }
+}
 
 void InkCanvas::clear()
 {
@@ -140,34 +159,6 @@ int InkCanvas::drawTextClipped(int x, int y, int maxW, const char* s, bool black
 static const uint8_t SEG_7SEG[10] = {
   0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F
 };
-
-void InkCanvas::drawSevenDigit(int x, int y, int digit, int w, int h, bool black)
-{
-  if (digit < 0 || digit > 9) digit = 8;
-  if (w < 7 || h < 11) return;
-  uint8_t seg = SEG_7SEG[digit];
-  int t = h / 12;
-  if (t < 2) t = 2;
-  int midY = y + h / 2 - t / 2;
-  int halfH = h / 2 - t;
-  if (halfH < 1) halfH = 1;
-
-  if (seg & 0x01) fillRect(x + t, y, w - 2 * t, t, black);                // A
-  if (seg & 0x02) fillRect(x + w - t, y + t, t, halfH, black);             // B
-  if (seg & 0x04) fillRect(x + w - t, midY + t / 2 + 1, t, halfH, black);  // C
-  if (seg & 0x08) fillRect(x + t, y + h - t, w - 2 * t, t, black);         // D
-  if (seg & 0x10) fillRect(x, midY + t / 2 + 1, t, halfH, black);          // E
-  if (seg & 0x20) fillRect(x, y + t, t, halfH, black);                     // F
-  if (seg & 0x40) fillRect(x + t, midY, w - 2 * t, t, black);              // G
-}
-
-void InkCanvas::drawSevenColon(int x, int y, int h, bool black)
-{
-  int d = h / 14;
-  if (d < 2) d = 2;
-  fillRect(x, y + h / 4 - d / 2, d, d, black);
-  fillRect(x, y + (h * 3) / 4 - d / 2, d, d, black);
-}
 
 void InkCanvas::loadServerFrame(const uint8_t* data, size_t len)
 {

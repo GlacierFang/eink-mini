@@ -38,11 +38,6 @@ CONFIG_FIELDS = {
         "type": "text",
         "hint": "填城市名，比如「杭州」。改了会重新查坐标并立刻取一次天气。",
     },
-    "device_title": {
-        "label": "屏幕标题",
-        "type": "text",
-        "hint": "显示在设备时钟页右上角。只能用 ASCII —— 设备屏没有中文字库。",
-    },
 }
 
 # 页面注册表：id、type、标题、控制台里归到哪个功能分区
@@ -54,7 +49,7 @@ PAGES = [
         "title": "时钟",
         "label": "CLOCK",
         "desc": "设备本地渲染的翻页钟，断网也能显示，不消耗服务端。",
-        "fields": ["device_title"],
+        "fields": [],
     },
     {
         "id": "timer",
@@ -221,7 +216,7 @@ def _page_version(page_id):
     elif page_id == "calendar":
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
     else:
-        seed = "clock|%s" % cfg.get("device_title", "")
+        seed = "clock|local"
     return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
 
 
@@ -237,11 +232,9 @@ def manifest():
     for i, p in enumerate(PAGES[:MAX_PAGES]):
         # native 页由设备本地渲染，标题直接用配置里的 device_title，
         # 这样控制台改标题才会真的出现在屏上
+        # native 页（clock / timer）的标题是常量：屏上不显示标题，
+        # 设备名也不该由用户起 —— 屏上能一眼看到的就是现在几点。
         label = p["label"]
-        # 只有 clock 页用配置里的 device_title。timer 是另一种 native 页，
-        # 标题固定 —— 用 device_title 会把时钟标题套到计时器上。
-        if p["type"] == "native" and p["id"] == "clock":
-            label = cfg.get("device_title") or p["label"]
         pages_out.append(
             {
                 "id": p["id"],
@@ -325,12 +318,6 @@ def _validate_field(key, raw):
         if not hit:
             return None, "查不到这个城市：" + value
         return {"city": value, "lat": hit[0], "lon": hit[1]}, ""
-    if key == "device_title":
-        if not value:
-            return None, "标题不能为空"
-        if not value.isascii():
-            return None, "标题只能用 ASCII（设备屏没有中文字库）"
-        return {"device_title": value[:16]}, ""
     return None, "未知配置项：" + key
 
 

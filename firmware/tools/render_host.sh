@@ -14,7 +14,8 @@ BIN=/tmp/ink_host_render
 build() {
   echo "编译主机渲染器..."
   g++ -std=c++11 -O2 -I src \
-      src/ink_canvas.cpp src/ink_pages.cpp tools/host_render.cpp \
+      src/ink_canvas.cpp src/ink_pages.cpp src/ink_font_big.cpp \
+      tools/host_render.cpp \
       -o "$BIN"
 }
 
