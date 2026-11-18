@@ -184,21 +184,27 @@ def main():
         print('%6d %8.2f %8.2f %10d' % (thr, ps / n, iso / n, fr // n))
 
     print()
-    print('=== 图标（28x28，只有硬阈值有意义）===')
-    print('%8s %8s' % ('墨点', '孤立%'))
+    print('=== 图标（28x28：轮廓硬边 + 内部 bayer4 抖动）===')
+    print('%8s %8s %10s' % ('墨点', '孤立%', '感知黑度%'))
     tot = 0
     iso_num = 0.0
     for k in sorted(set(icons._KIND.values())):
         ic, it = icons.render(k)
         if ic is None:
             continue
-        m = renderer.to_mask(ic, 'hard', renderer.DEFAULT_THRESHOLD,
-                             size=(icons.SIZE, icons.SIZE))
+        cm = renderer.to_mask(ic, 'hard', renderer.DEFAULT_THRESHOLD,
+                              size=(icons.SIZE, icons.SIZE))
+        tm = renderer.to_mask(it, renderer.TONE_DITHER_MODE,
+                              renderer.TONE_DITHER_THRESHOLD,
+                              size=(icons.SIZE, icons.SIZE))
+        m = [[cm[y][x] or tm[y][x] for x in range(icons.SIZE)]
+             for y in range(icons.SIZE)]
         n = sum(1 for row in m for v in row if v)
         tot += n
         iso_num += isolated_ratio(m) / 100.0 * n
     print('%8d %8.2f' % (tot, 100.0 * iso_num / max(1, tot)))
-    print('（28x28 上抖动是纹理不是灰度，图标不走 dither）')
+    print('（内部灰阶走 bayer4 网点：油墨只有黑白，靠空间密度换灰阶；'
+          '轮廓/细笔画留硬边，1px 线在抖动下会断）')
 
 
 if __name__ == '__main__':

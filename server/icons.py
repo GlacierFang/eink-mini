@@ -20,17 +20,40 @@
 页面上画，形状代码就得带偏移，偏移算错一次就飞 —— 试过，
 太阳飞到左上角压住了大温度。局部画布把这个 bug 消灭在结构里。
 
-**细致化靠负空间和构图，不靠灰度抖动**（2026-11-18 实测）：
+**灰阶用空间密度换**（2026-11-18 复核，前面那版结论是错的）：
 
-| 变体          | 孤立噪点% | 1x 实际尺寸观感     |
-|---------------|-----------|--------------------|
-| A 实心剪影     | 0.10      | 清楚，但没细节      |
-| **B 掏白高光** | **0.11**  | **清楚 + 有细节**   |
-| C 纯灰阶抖动   | 14.71     | 云变成噪点团       |
-| E 轮廓 + 灰阶  | 23.67     | 最差                |
+SSD1608 是严格 1bpp，但油墨只有黑、纸只有白，报纸照样能印出明暗层次 ——
+靠的不是把油墨调淡，是**空间密度换灰阶**（半色调/网点纸原理）。
+人眼在正常视距下看不清孤立的黑白点，会对局部区域做积分平均：
+100% 黑 = 纯黑，50% 网点 = 中灰，25% 网点 = 浅灰。
 
-28x28 上抖动出来的不是灰度，是**纹理** —— 一堆散点。所以图标全走
-清晰层（硬阈值），用负空间做体积感。
+屏幕 296x128 = 111 PPI，30cm 视距下单像素 2.6 角分。
+眼模型实测（高斯模糊模拟视觉积分，30cm）：
+
+| 变体                 | 感知黑度 | 纹理 sd |
+|---------------------|---------|---------|
+| 实心 100%            | 97.4%   | 14.89   |
+| **bayer4 50%**       | **50.5%** | **3.01** |
+| bayer4 25%           | 32.9%   | 6.89    |
+| bayer4 75%           | 73.8%   | 8.31    |
+
+实心填充的纹理噪声是 50% 抖动的 5 倍 —— 这就是"大面积黑块视觉压迫感强"
+的量化版。bayer4 的 50% 是最甜的一档：4x4 矩阵正好半亮半暗、分布最均匀。
+
+**但有三条硬边界**（实测，不是估计）：
+
+1. **面积下限 16x16 px**：8x8 读出的是"点"不是"调子"（sd 10.98），
+   16x16 才干净（sd 2.09）。
+2. **笔画下限 2px**：1px 横条在 bayer4 下有 50% 的列是断的。
+   所以文字、1px 细箭头、细线必须硬边，绕开抖动。
+3. **bayer2 不够用**：只有 4 级灰，最小非零灰阶就是 50%，
+   表达不出 25% 浅灰。要 16 级就得 bayer4。
+
+**本文件的做法**：轮廓留清晰层（硬边，2px 宽），内部填灰走抖动。
+轮廓保持形状，内部才有灰阶层次 —— 这正是报纸网点的做法。
+
+细笔画自动留在清晰层：雨丝 2px、雪花十字、雾的横条、太阳环 3px，
+腐蚀 2px 之后什么都不剩，整根还是实心硬边。抖动不会碰它们。
 
 **云上掏白试过三种，全是坑**（1x 实测）：
   掏个洞      -> 读作破洞
@@ -43,7 +66,7 @@
 雾中间一条虚线（浓度低）。
 """
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 import renderer
 
@@ -163,12 +186,89 @@ def _bolt(d, x=8, y=12):
     )
 
 
-def render(kind):
-    """画一个图标，返回 (清晰层 28x28, None)。
+def _erode(mask, k):
+    """二值掩码（白 = 形状）腐蚀 k 像素。"""
+    return mask.filter(ImageFilter.MinFilter(k))
 
-    局部画布 -> 降采样回 28x28。灰阶层不用 —— 28x28 上抖动出来
-    是纹理不是灰度（见文件头实测表）。返回 None 是为了以后
-    有大块连续色调区域时还能用上这条通路。
+
+def _components(mask):
+    """连通域 -> [[(x, y), ...]]。四邻接。"""
+    seen = [[False] * SIZE for _ in range(SIZE)]
+    out = []
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if mask.getpixel((x, y)) > 127 and not seen[y][x]:
+                stack = [(x, y)]
+                seen[y][x] = True
+                cells = []
+                while stack:
+                    cx, cy = stack.pop()
+                    cells.append((cx, cy))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if 0 <= nx < SIZE and 0 <= ny < SIZE:
+                            if not seen[ny][nx] and mask.getpixel((nx, ny)) > 127:
+                                seen[ny][nx] = True
+                                stack.append((nx, ny))
+                out.append(cells)
+    return out
+
+
+def _split_layers(crisp):
+    """画好的图标 -> (轮廓清晰层 28x28, 内部灰阶层 28x28)。
+
+    轮廓 = 形状外 2px，留在清晰层硬边输出，形状边界不糊。
+    内部 = 腐蚀 2px 后的厚块，填 50% 灰交给有序抖动（bayer4）。
+
+    细笔画腐蚀后什么都不剩，自动整根留在清晰层 ——
+    1px 线在抖动下会断成虚线（实测 50% 的列断掉）。
+
+    内部连通域太小也退回清晰层：
+      - 面积 < 64px
+      - 包围盒宽或高 < 8px（放不下完整的 4x4 抖动周期）
+    那点面积抖出来是散点不是灰 —— 实测 sun 的 30px 内块抖完
+    texture_sd 40.55，是 cloud（19.63）的两倍，就是散点噪。
+    """
+    size = (SIZE, SIZE)
+    # 用页面清晰层同一套阈值（165），保证轮廓宽度和以前的实心剪影一致。
+    shape = crisp.point(lambda v: 255 if v < 165 else 0)
+    inner = _erode(shape, 5)
+
+    keep = Image.new("L", size, 0)
+    for cells in _components(inner):
+        if len(cells) < 64:
+            continue
+        xs = [c[0] for c in cells]
+        ys = [c[1] for c in cells]
+        if (max(xs) - min(xs) + 1) < 8 or (max(ys) - min(ys) + 1) < 8:
+            continue
+        for (x, y) in cells:
+            keep.putpixel((x, y), 255)
+
+    outline = Image.new("L", size, 255)
+    op = outline.load()
+    sp = shape.load()
+    kp = keep.load()
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if sp[x, y] > 127 and kp[x, y] <= 127:
+                op[x, y] = 0
+
+    tone = Image.new("L", size, 255)
+    tp = tone.load()
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if kp[x, y] > 127:
+                tp[x, y] = 128
+
+    return outline, tone
+
+
+def render(kind):
+    """画一个图标，返回 (轮廓清晰层 28x28, 内部灰阶层 28x28)。
+
+    局部画布 -> 降采样回 28x28 -> 拆成轮廓层和内部灰阶层。
+    轮廓走硬阈值，内部走 bayer4 抖动，量化时取并集（见 renderer.page_mask）。
     """
     if kind not in set(_KIND.values()):
         return None, None
@@ -230,4 +330,4 @@ def render(kind):
         d.rectangle((2, 24, 4, 27), fill=0)
         d.rectangle((23, 24, 26, 27), fill=0)
 
-    return renderer.downsample(img, size=(SIZE, SIZE)), None
+    return _split_layers(renderer.downsample(img, size=(SIZE, SIZE)))

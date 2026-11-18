@@ -65,13 +65,18 @@ DITHER_MODES = ("hard", "bayer2", "bayer4", "floyd")
 DEFAULT_MODE = "hard"
 DEFAULT_THRESHOLD = 165
 
-# 灰阶层（图标色块）的量化策略：有序抖动。
+# 灰阶层（图标填充、背景块）的量化策略：有序抖动。
 #
-# 硬阈值会把灰色全砍成黑，就没有层次了。有序抖动用网点疏密编码灰阶。
+# 硬阈值会把灰色全砍成黑，就没有层次了。有序抖动用网点疏密编码灰阶 ——
+# 这就是报纸网点纸的原理：油墨只有黑、纸只有白，靠空间密度换灰阶。
 #
-# bayer2 而不是 bayer4：图标只有 28x28，bayer4 的 4x4 网点块在这个
-# 尺寸上是一格格能看出来的。
-TONE_DITHER_MODE = "bayer2"
+# bayer4 而不是 bayer2：bayer2 只有 4 级灰，最小非零灰阶就是 50%，
+# 根本表达不出 25% 浅灰。bayer4 有 16 级。
+#
+# bayer4 的 50% 是实测最干净的一档（30cm 视距，纹理 sd）：
+#   bayer4 50% -> 3.01    bayer4 25% -> 6.89    bayer4 75% -> 8.31
+# 50% 最甜：4x4 矩阵正好半亮半暗、分布最均匀；25% 稀疏会成团。
+TONE_DITHER_MODE = "bayer4"
 TONE_DITHER_THRESHOLD = 128
 
 # Bayer 阈值矩阵。M 越大 -> 该位置阈值越低 -> 越容易判黑。
