@@ -16,7 +16,7 @@ from datetime import datetime
 
 import icons
 import renderer
-from weather import describe
+from weather import describe_short
 
 W = renderer.W
 H = renderer.H
@@ -84,9 +84,32 @@ def render_weather(weather, fallback_city="城市"):
     ub = d.textbbox((0, 0), "°C", font=unit_font)
     d.text((ink_right + 4, num_top + 4 - ub[1]), "°C", font=unit_font, fill=0)
 
-    f_city = renderer.load_font(16)
-    desc = describe(code)
+    # 右栏：城市 + 天气简称。
+    #
+    # 大温度是全屏锚点，右栏绝不能压上去。城市名长（乌鲁木齐）加
+    # 天气描述长时会撞 —— 这里量了再画：
+    # 先算出温度块（含单位）右缘，右栏左缘必须留 8px 间隙。
+    # 放不下就让城市名先让位（天气信息量比地名大），再逐档缩字号，
+    # 还放不下就截断。城市名是用户可改的，长度不设上限，所以必须防。
+    desc = describe_short(code)
     line1 = (city + " " + desc).strip() if desc else city
+    temp_right = ink_right + 4 + uw           # 温度块（含单位）右缘
+    min_left = temp_right + 8                 # 右栏左缘下限
+    max_width = max(24, (W - 8) - min_left)   # 右栏可用宽度
+
+    f_city = renderer.load_font(16)
+    if renderer.text_width(d, line1, f_city) > max_width:
+        line1 = desc or city                  # 城市名先让位
+    for size in (16, 15, 14, 13, 12):
+        f = renderer.load_font(size)
+        if renderer.text_width(d, line1, f) <= max_width:
+            f_city = f
+            break
+    else:
+        f_city = renderer.load_font(12)
+        while line1 and renderer.text_width(d, line1, f_city) > max_width:
+            line1 = line1[:-1]
+
     if line1:
         _ink_right(d, line1, f_city, num_top, W - 8)
     if hum:
