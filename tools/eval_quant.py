@@ -185,9 +185,9 @@ def main():
 
     print()
     print('=== 图标（28x28：轮廓硬边 + 内部 bayer4 抖动）===')
-    print('%8s %8s %10s' % ('墨点', '孤立%', '感知黑度%'))
+    print('%12s %8s %12s' % ('图标', '墨点', '感知黑度%'))
+    from PIL import ImageFilter
     tot = 0
-    iso_num = 0.0
     for k in sorted(set(icons._KIND.values())):
         ic, it = icons.render(k)
         if ic is None:
@@ -201,10 +201,17 @@ def main():
              for y in range(icons.SIZE)]
         n = sum(1 for row in m for v in row if v)
         tot += n
-        iso_num += isolated_ratio(m) / 100.0 * n
-    print('%8d %8.2f' % (tot, 100.0 * iso_num / max(1, tot)))
-    print('（内部灰阶走 bayer4 网点：油墨只有黑白，靠空间密度换灰阶；'
-          '轮廓/细笔画留硬边，1px 线在抖动下会断）')
+        # 感知黑度：模糊 2px 模拟 30cm 视距下的视觉积分，再在形状内求均值。
+        img = renderer._mask_to_image(m)
+        blur = img.filter(ImageFilter.GaussianBlur(2.0))
+        bp = blur.load()
+        vals = [bp[x, y] for y in range(icons.SIZE) for x in range(icons.SIZE)
+                if m[y][x]]
+        mean = sum(vals) / max(1, len(vals))
+        print('%12s %8d %11.1f%%'
+              % (k, n, 100.0 * (1.0 - mean / 255.0)))
+    print('（孤立像素率对抖动填充没有意义 —— 网点本身就是散开的黑点。'
+          '该看的指标是感知黑度。）')
 
 
 if __name__ == '__main__':
