@@ -39,7 +39,7 @@ FRAME_BYTES = ROW_BYTES * H
 # 超采样倍数。渲染在 SCALE 倍画布上做，最后 BOX 降采样回 296x128。
 SCALE = 3
 
-FONT_REGULAR = "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"
+FONT_REGULAR = "/usr/share/fonts/opentype/unifont/unifont.otf"
 FONT_BOLD = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 
 _font_cache = {}

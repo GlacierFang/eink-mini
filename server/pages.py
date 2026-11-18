@@ -41,6 +41,43 @@ def _ink_center(draw, text, font, top, cx):
     draw.text((cx - (b[0] + b[2]) / 2, top - b[1]), text, font=font, fill=0)
 
 
+# 天气页的小三角箭头。
+#
+# 不用字体自带的 arrow 符号：12px 下那条竖线只有 1px 宽，
+# 超采样 -> 降采样 -> 硬阈值之后会被吃掉，出来是一个孤零零的小黑点。
+# 实心三角是实心块，1bpp 上不会退化。
+# 三角箭头的每行宽度（尖端 2px 宽，保证降采样后还在）。
+# 上尖：2 4 6 7 7   下尖：7 7 6 4 2
+_ARROW_ROWS_UP = (2, 4, 6, 7, 7)
+_ARROW_ROWS_DOWN = (7, 7, 6, 4, 2)
+_ARROW_PX = 7
+
+
+def _arrow_tri(d, cx, top, down):
+    """在 (cx, top) 画一个实心小三角箭头。
+
+    **每行画一个实心横条**，不画多边形、不画细尖角。
+    超采样 -> 降采样 -> 硬阈值这条链会把「部分覆盖」的行直接吃掉：
+    多边形画的尖角只有 1px 宽，降采样后覆盖率不到阈值，尖没了，
+    出来是一个缺角的方块。整行实心（覆盖率 100%）才扛得住。
+    """
+    widths = _ARROW_ROWS_DOWN if down else _ARROW_ROWS_UP
+    for i, w in enumerate(widths):
+        x0 = cx - w / 2.0
+        d.rectangle((x0, top + i, x0 + w - 1, top + i + 1), fill=0)
+
+
+def _temp_row(d, down, value, font, top, cx):
+    """一行「三角箭头 + 温度」，整组在 cx 处居中。"""
+    txt = value + chr(176)
+    tw = renderer.text_width(d, txt, font)
+    gap = 2
+    total = _ARROW_PX + gap + tw
+    x = cx - total / 2.0
+    _arrow_tri(d, x + _ARROW_PX / 2.0, top + 2, down)
+    b = d.textbbox((0, 0), txt, font=font)
+    d.text((x + _ARROW_PX + gap - b[0], top - b[1]), txt, font=font, fill=0)
+
 def render_weather(weather, fallback_city="城市"):
     """天气页。返回 (清晰层 296x128, 图标列表)。
 
@@ -136,9 +173,9 @@ def render_weather(weather, fallback_city="城市"):
         tmax = str(day.get("tmax") or "")
         tmin = str(day.get("tmin") or "")
         if tmax:
-            _ink_center(d, "↑" + tmax + "°", f, 82, cx)
+            _temp_row(d, False, tmax, f, 82, cx)
         if tmin:
-            _ink_center(d, "↓" + tmin + "°", f, 94, cx)
+            _temp_row(d, True, tmin, f, 94, cx)
 
         date = str(day.get("date") or "")
         label = (date[8:10] + "日") if len(date) >= 10 else date

@@ -137,7 +137,10 @@ static bool renderCurrentPage()
     return true;
   }
 
-  uint32_t ep = g_net.epoch();
+  // 用 currentEpoch()，不是 g_net.epoch()。
+  // 未校时时 lwIP 的 time() 返回开机秒数（很小，比如 120），加上东八区会渲染成
+  // 08:01 这种假时间。currentEpoch() 把 < 1700000000 的值过滤成 0，渲染器画成 --:--。
+  uint32_t ep = currentEpoch();
   inkRenderClockPage(g_canvas, ep);
   return true;
 }
@@ -305,7 +308,7 @@ void loop()
       if (finished) Serial.println("[timer] 计时结束");
     }
   } else if (isLocal) {
-    // 时钟页每秒重画一次，走局刷只脏数字区域。
+    // 时钟页按分钟重画，走局刷只脏数字区域。
     //
     // 不看 g_timeOk，看 epoch 本身：没校时时 currentEpoch() 返回 0，
     // 渲染器画成 --:--。这样即使 SNTP 在 syncTime() 的 12 秒窗口之后
