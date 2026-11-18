@@ -12,6 +12,8 @@
 >
 > 🟢 **配套服务端已上线**：`http://ruohan.site/eink-mini/`（后端 18842，nginx 路由 `/eink-mini/`）。
 >
+> 🟢 **服务端六页**：时钟 / 计时器（设备本地渲染，断网可用）+ 天气 / 逐小时 / 月历 / 黄历（服务端位图）。逐小时页的城市可以单独设，和天气页互不影响。
+>
 > 🔒 **编译不会自动跑**。GitHub Actions 手动触发（`workflow_dispatch`），要编译时自己点一下。
 
 ## 硬件
@@ -287,7 +289,7 @@ firmware/lib/GxEPD2/          vendored GxEPD2 最小子集（见许可）
 server/
   app.py            Flask 应用与路由
   renderer.py       1bpp 帧编码（296x128，MSB first，1=黑，4736 字节）
-  pages.py          天气 / 月历 / 单日黄历页面渲染
+  pages.py          天气 / 逐小时 / 月历 / 单日黄历页面渲染
   almanac.py        农历、干支、节气换算（立春换年、节气换月的规则见文件头）
   lunar_python/     vendored 农历库（MIT，见该目录 LICENSE）
   weather.py        Open-Meteo 取数（后台线程 + 落盘缓存，渲染路径只读缓存）
@@ -313,17 +315,20 @@ server/openclaw-eink-mini.service
 | GET / | 控制台（功能预览 + 配置 + 设备状态） |
 | GET /preview/{id}.png | 页面预览图 |
 | GET /api/config | 读配置 |
-| POST /api/config | 改城市 |
+| POST /api/config | 改城市（天气页和逐小时页各一个） |
 | GET /api/device | 设备在线状态 |
 
 页面清单里 `type` 的含义：`native` = 设备本地渲染（翻页钟），`timer` = 设备本地计时器，`bitmap` = 服务端下发位图。
-当前五个页：clock（native）、timer（timer）、weather、calendar、almanac。
+当前六个页：clock（native）、timer（timer）、weather、hourly、calendar、almanac。
+
+`hourly` 是逐小时预报页：未来 12 小时的温度折线、天气图标和降水概率。
+它的城市独立于天气页 —— 控制台上单独设，留空则跟随天气页。
 
 清单里的 `version` 按页面内容算指纹：配置或日期变了才变，设备据此决定要不要重下位图。
 （早期版本用时间戳，导致设备每次轮询都认为页面全变，反复重下全部位图。）
 
 控制台分区：设备状态（在线 / 最后活动 / 来源 / 拉取次数）、各功能页面预览、
-功能配置（天气城市、时钟屏标题，标题限 ASCII —— 设备屏没有中文字库）。
+功能配置（天气城市、逐小时城市，各自独立）。
 新增功能时，服务端多一个渲染页 → 清单多一页 → 控制台多一个分区，设备端不用改。
 
 设备只说纯 HTTP，所以实例挂在 HTTP 路径前缀 `/eink-mini/` 下。
