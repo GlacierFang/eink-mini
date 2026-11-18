@@ -8,20 +8,24 @@
    腐蚀描边又变成圆顶土面包 —— 都不如字形。
    但字形从 96px 缩到 24px 再阈值化，光芒会被筛成断点，出来是虚线圆。
    所以：**按目标字号原生渲染进画布，不缩放**，
-   最终的黑白判定交给 image_to_1bpp 统一做。
+   最终的黑白判定交给量化层统一做。
    ❄（U+2744）cmap 里有但渲染是豆腐块，所以雪花还是手绘。
 2. **1px 细斜线在点阵上碎成阶梯**，远看就是噪点。
    只用横、竖、2x2 方块、多边形。
 3. **剪影要一眼不同**。雨雪雷都带云时，靠"竖条 / 实心十字 / Z 形折线"
    三种骨架区分；云的圆弧高度也要不同，一样高就成了面包。
+
+图标在**超采样画布**上画（renderer.SCALE 倍），整幅画完再降采样，
+所以边缘有真正的抗锯齿 —— 这正是灰度要的东西。
 """
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+
+import renderer
 
 SIZE = 28
 
-GLYPH_FONT = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
-SUN_GLYPH = "\u2600"
+SUN_GLYPH = "☀"
 
 # WMO 天气码 -> 图标种类
 _KIND = {
@@ -55,8 +59,6 @@ _KIND = {
     99: "hail",
 }
 
-_font_cache = {}
-
 
 def kind_for(code):
     """WMO 码 -> 图标种类。取不到就空串。"""
@@ -69,8 +71,8 @@ def kind_for(code):
 
 
 def _blank():
-    """L 画布：0 = 黑，255 = 白。"""
-    return Image.new("L", (SIZE, SIZE), 255)
+    """超采样画布：0 = 黑，255 = 白。"""
+    return Image.new("L", (SIZE * renderer.SCALE, SIZE * renderer.SCALE), 255)
 
 
 def _sun_glyph(d, px, cx, cy):
@@ -78,16 +80,9 @@ def _sun_glyph(d, px, cx, cy):
 
     不缩放：缩小会把光芒筛成断点。取不到字形就返回 False。
     """
-    if px not in _font_cache:
-        try:
-            _font_cache[px] = ImageFont.truetype(GLYPH_FONT, px)
-        except OSError:
-            _font_cache[px] = None
-    font = _font_cache[px]
-    if font is None:
-        return False
+    font = renderer.load_font(px, bold=True)
     bb = d.textbbox((0, 0), SUN_GLYPH, font=font)
-    d.text((cx - (bb[0] + bb[2]) // 2, cy - (bb[1] + bb[3]) // 2),
+    d.text((cx - (bb[0] + bb[2]) / 2, cy - (bb[1] + bb[3]) / 2),
            SUN_GLYPH, font=font, fill=0)
     return True
 
@@ -127,8 +122,9 @@ def _bolt(d, x=8, y=12):
 
 
 def _draw(kind):
+    """画一个图标，返回超采样灰度图。"""
     img = _blank()
-    d = ImageDraw.Draw(img)
+    d = renderer.ScaledDraw(ImageDraw.Draw(img), renderer.SCALE)
 
     if kind == "sun":
         if not _sun_glyph(d, 26, 14, 14):
@@ -180,10 +176,15 @@ def _draw(kind):
 
 
 def draw_icon(canvas, kind, x, y):
-    """把图标贴到灰度画布上。图标是纯黑像素，贴完不会有灰边。"""
+    """把图标贴到**超采样**灰度画布上。x / y 是逻辑坐标。
+
+    用反相当 alpha 贴：墨迹处不透明，白底处完全透明，
+    所以既保留抗锯齿的灰边，又不会盖掉画布上已有的东西。
+    """
     img = _draw(kind)
     if img is None:
         return False
-    mask = img.point(lambda v: 255 if v < 128 else 0)
-    canvas.paste(Image.new("L", (SIZE, SIZE), 0), (int(x), int(y)), mask)
+    alpha = img.point(lambda v: 255 - v)
+    black = Image.new("L", img.size, 0)
+    canvas.paste(black, (int(round(x * renderer.SCALE)), int(round(y * renderer.SCALE))), alpha)
     return True

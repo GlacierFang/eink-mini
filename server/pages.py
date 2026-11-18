@@ -1,13 +1,14 @@
 """各页面渲染：天气、月历。
 
-页面内容用 PIL 画成 296x128 的灰度图，再转成设备 1bpp 帧。
+页面内容用 PIL 画成灰度图，再量化成设备 1bpp 帧。
+
+**在 3 倍超采样画布上画**，最后 BOX 降采样回 296x128。
+这样小字和图标的边缘有真正的抗锯齿 —— 灰度让画面更精细就靠这一步。
 中文在这里渲染（设备零中文字库，只出 ASCII）。
 """
 
 import calendar
 from datetime import datetime
-
-from PIL import ImageDraw
 
 import icons
 import renderer
@@ -45,8 +46,8 @@ def render_weather(weather, fallback_city="城市"):
     温度等数字都是**字符串**：取不到就是空串，不是 0。
     屏上不显示 0 度的假数据 —— 和 petd 的做法一致。
     """
-    img = renderer.new_canvas()
-    d = ImageDraw.Draw(img)
+    canvas = renderer.new_canvas()
+    d = renderer.draw_on(canvas)
     weather = weather or {}
     city = weather.get("city") or fallback_city
     temp = str(weather.get("temp") or "")
@@ -96,7 +97,7 @@ def render_weather(weather, fallback_city="城市"):
         cx = margin + col_w * (i + 0.5)
         kind = icons.kind_for(day.get("code"))
         if kind:
-            icons.draw_icon(img, kind, cx - icons.SIZE / 2, 52)
+            icons.draw_icon(canvas, kind, cx - icons.SIZE / 2, 52)
 
         tmax = str(day.get("tmax") or "")
         tmin = str(day.get("tmin") or "")
@@ -109,13 +110,13 @@ def render_weather(weather, fallback_city="城市"):
         label = (date[8:10] + "日") if len(date) >= 10 else date
         if label:
             _ink_center(d, label, f, 106, cx)
-    return img
+    return renderer.downsample(canvas)
 
 
 def render_calendar(now=None):
     now = now or datetime.now()
-    img = renderer.new_canvas()
-    d = ImageDraw.Draw(img)
+    canvas = renderer.new_canvas()
+    d = renderer.draw_on(canvas)
     renderer.draw_header(d, "%d年%d月" % (now.year, now.month), "CALENDAR")
 
     f_wd = renderer.load_font(14)
@@ -135,10 +136,14 @@ def render_calendar(now=None):
             y = 52 + row * cell_h
             txt = str(day)
             tw = renderer.text_width(d, txt, fnum)
+            tx = x - tw // 2
             if day == now.day:
-                d.rectangle([x - tw // 2 - 3, y - 2, x + tw // 2 + 3, y + cell_h - 3],
-                            fill=0)
-                d.text((x - tw // 2, y), txt, font=fnum, fill=255)
+                # 反白块必须罩住**墨迹本身**。按固定 cell_h 算块高，
+                # 会切掉数字底部 —— 18 里的 8 只剩上半圈。
+                b = d.textbbox((0, 0), txt, font=fnum)
+                d.rectangle([tx + b[0] - 2, y + b[1] - 1,
+                             tx + b[2] + 2, y + b[3] + 1], fill=0)
+                d.text((tx, y), txt, font=fnum, fill=255)
             else:
-                d.text((x - tw // 2, y), txt, font=fnum, fill=0)
-    return img
+                d.text((tx, y), txt, font=fnum, fill=0)
+    return renderer.downsample(canvas)
