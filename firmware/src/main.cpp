@@ -59,7 +59,7 @@ static uint32_t g_lastTimerSec = 0;
 // 就是对的。所以直接看 epoch 是否合理（2020-01-01 之后）。
 static uint32_t currentEpoch()
 {
-  uint32_t ep = currentEpoch();
+  uint32_t ep = g_net.epoch();
   return (ep > 1700000000UL) ? ep : 0UL;
 }
 
