@@ -6,9 +6,9 @@
 
 ## 现在做到哪一步了
 
-> 🟢 **固件写完，CI 编译通过**（run 44301927815 全绿，head 3ebcfdd）。产物在 `fw-bin` 分支，国内网络可直接 `git clone` 拿到。
+> 🟢 **固件写完，CI 编译通过**（run 44301927815 全绿，head 3ebcfdd）。产物在 `fw-bin` 分支，国内网络可直接 `git clone` 拿到；也有 [Releases](https://github.com/GlacierFang/eink-mini/releases) 可直接下 .bin。
 >
-> 🟡 **还没上过真机**。接线、B 键 GPIO、旋转方向、BUSY 极性都要实物核对。
+> 🟢 **真机实测通过**（2026-11-18）：烧录 v0.1.0 后实机运行正常 —— 接线、按键、旋转方向、BUSY 极性、局刷残影、5×7 字库、Unifont 中文、天气图标、计时器状态词、单日黄历页全部核对无误。
 >
 > 🟢 **配套服务端已上线**：`http://ruohan.site/eink-mini/`（后端 18842，nginx 路由 `/eink-mini/`）。
 >
