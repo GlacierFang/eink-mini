@@ -5,13 +5,15 @@
 
 指标
 ----
-PSNR   候选灰度图 vs 参考灰度图。参考 = 6 倍超采样渲染后 4x4 面积平均。
-       量的是色调保真。
+PSNR    候选灰度图 vs 参考灰度图。参考 = 6 倍超采样渲染后 4x4 面积平均。
+        量的是色调保真。
 噪点%   孤立黑像素占全部墨迹的比例。四邻域没黑邻居的墨点 = 噪点。
-文字1px%  文字区里只有 1px 宽的笔画占全部笔画的比例。越高越碎。
+文字1px% 文字区里只有 1px 宽的笔画占全部笔画的比例。越高越碎。
 
 两个指标会打架：dither 的 PSNR 高，但噪点多、文字碎。
 墨水屏上字读不出来，色调再准也没用。
+
+图标另算：28x28 上抖动出来的是纹理不是灰度，所以图标只测硬阈值。
 """
 
 import os
@@ -21,10 +23,11 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'server'))
 
-from PIL import Image, ImageDraw  # noqa: E402
+from PIL import Image  # noqa: E402
 
 import renderer  # noqa: E402
 import pages  # noqa: E402
+import icons  # noqa: E402
 import weather  # noqa: E402
 
 REGIONS = {
@@ -34,19 +37,49 @@ REGIONS = {
 
 
 def render_at(scale):
-    """按指定超采样倍数渲染，随后恢复。"""
+    """按指定超采样倍数渲染，随后恢复。
+
+    返回 [(名字, 清晰层, 图标列表), ...]
+    """
     old = renderer.SCALE
     renderer.SCALE = scale
     renderer._font_cache.clear()
     try:
         w = weather.get_weather()
         return [
-            ('weather', pages.render_weather(w, '郑州')),
-            ('calendar', pages.render_calendar(datetime(2026, 11, 18, 8, 40))),
+            ('weather',) + pages.render_weather(w, '郑州'),
+            ('calendar',) + pages.render_calendar(datetime(2026, 11, 18, 8, 40)),
         ]
     finally:
         renderer.SCALE = old
         renderer._font_cache.clear()
+
+
+def page_reference(crisp, specs, size=(296, 128)):
+    """参考灰度图 = 清晰层 + 图标剪影。
+
+    图标必须进参考图。少了它，PSNR 是在拿「有图标的候选」跟
+    「没图标的参考」比 —— 数字会凭空掉 8 dB，读不出好坏。
+    """
+    g = crisp.convert('L')
+    if g.size != tuple(size):
+        g = g.resize(size)
+    g = g.copy()
+    op = g.load()
+    for (ox, oy, ic, it) in (specs or []):
+        px = ic.convert('L').load()
+        iw, ih = ic.size
+        for y in range(ih):
+            py = oy + y
+            if py < 0 or py >= size[1]:
+                continue
+            for x in range(iw):
+                pxx = ox + x
+                if pxx < 0 or pxx >= size[0]:
+                    continue
+                if px[x, y] < 128:
+                    op[pxx, py] = 0
+    return g
 
 
 def isolated_ratio(mask):
@@ -90,34 +123,35 @@ def frag_ratio(mask, regions):
 
 
 def main():
-    pages_1x = render_at(1)
-    pages_3x = render_at(3)
-    pages_6x = render_at(6)
+    p1 = render_at(1)
+    p3 = render_at(3)
+    p6 = render_at(6)
 
     print('=== 超采样收益：1x vs 3x，同一量化，参考取 6x ===')
     print('%-9s %-10s %8s %8s %8s' % ('页面', '量化', '1x', '3x', '差'))
-    for i, (name, _) in enumerate(pages_3x):
-        ref = renderer.average_view(pages_6x[i][1], 4)
+    for i, (name, _, _) in enumerate(p3):
+        ref = renderer.average_view(page_reference(p6[i][1], p6[i][2]), 4)
         for label, mode, thr in (('hard 128', 'hard', 128), ('hard 150', 'hard', 150),
-                                 ('hard 165', 'hard', 165), ('bayer4', 'bayer4', 128),
-                                 ('floyd 128', 'floyd', 128)):
-            p1 = renderer.psnr(renderer.perceived_view(pages_1x[i][1], mode, thr, 4), ref)
-            p3 = renderer.psnr(renderer.perceived_view(pages_3x[i][1], mode, thr, 4), ref)
-            print('%-9s %-10s %8.2f %8.2f %+8.2f' % (name, label, p1, p3, p3 - p1))
+                                 ('hard 165', 'hard', 165), ('bayer4', 'bayer4', 128)):
+            p1v = renderer.psnr(
+                renderer.page_perceived(p1[i][1], p1[i][2], mode=mode, threshold=thr, block=4), ref)
+            p3v = renderer.psnr(
+                renderer.page_perceived(p3[i][1], p3[i][2], mode=mode, threshold=thr, block=4), ref)
+            print('%-9s %-10s %8.2f %8.2f %+8.2f' % (name, label, p1v, p3v, p3v - p1v))
 
     print()
     print('=== 量化策略（3x 渲染）===')
     print('%-9s %-10s %7s %8s %8s %10s' % ('页面', '量化', 'PSNR', '噪点%', '墨量%', '文字1px%'))
     agg = {}
-    for i, (name, img) in enumerate(pages_3x):
-        ref = renderer.average_view(pages_6x[i][1], 4)
+    for i, (name, crisp, specs) in enumerate(p3):
+        ref = renderer.average_view(page_reference(p6[i][1], p6[i][2]), 4)
         regions = REGIONS[name]
         for label, mode, thr in (('hard 128', 'hard', 128), ('hard 150', 'hard', 150),
                                  ('hard 165', 'hard', 165), ('bayer2', 'bayer2', 128),
                                  ('bayer4', 'bayer4', 128), ('floyd 128', 'floyd', 128),
                                  ('floyd 140', 'floyd', 140)):
-            mask = renderer.to_mask(img, mode, thr, size=(296, 128))
-            cand = renderer.perceived_view(img, mode, thr, 4)
+            mask = renderer.page_mask(crisp, specs, mode=mode, threshold=thr)
+            cand = renderer.page_perceived(crisp, specs, mode=mode, threshold=thr, block=4)
             psnr = renderer.psnr(cand, ref)
             iso = isolated_ratio(mask)
             ink = 100.0 * sum(1 for r in mask for v in r if v) / (296 * 128)
@@ -139,14 +173,32 @@ def main():
     print('%6s %8s %8s %10s' % ('阈值', 'PSNR', '噪点%', '文字1px%'))
     for thr in range(120, 186, 5):
         ps = iso = fr = 0
-        for i, (name, img) in enumerate(pages_3x):
-            ref = renderer.average_view(pages_6x[i][1], 4)
-            mask = renderer.to_mask(img, 'hard', thr, size=(296, 128))
-            ps += renderer.psnr(renderer.perceived_view(img, 'hard', thr, 4), ref)
+        for i, (name, crisp, specs) in enumerate(p3):
+            ref = renderer.average_view(page_reference(p6[i][1], p6[i][2]), 4)
+            mask = renderer.page_mask(crisp, specs, mode='hard', threshold=thr)
+            ps += renderer.psnr(
+                renderer.page_perceived(crisp, specs, mode='hard', threshold=thr, block=4), ref)
             iso += isolated_ratio(mask)
             fr += frag_ratio(mask, REGIONS[name])
-        n = len(pages_3x)
+        n = len(p3)
         print('%6d %8.2f %8.2f %10d' % (thr, ps / n, iso / n, fr // n))
+
+    print()
+    print('=== 图标（28x28，只有硬阈值有意义）===')
+    print('%8s %8s' % ('墨点', '孤立%'))
+    tot = 0
+    iso_num = 0.0
+    for k in sorted(set(icons._KIND.values())):
+        ic, it = icons.render(k)
+        if ic is None:
+            continue
+        m = renderer.to_mask(ic, 'hard', renderer.DEFAULT_THRESHOLD,
+                             size=(icons.SIZE, icons.SIZE))
+        n = sum(1 for row in m for v in row if v)
+        tot += n
+        iso_num += isolated_ratio(m) / 100.0 * n
+    print('%8d %8.2f' % (tot, 100.0 * iso_num / max(1, tot)))
+    print('（28x28 上抖动是纹理不是灰度，图标不走 dither）')
 
 
 if __name__ == '__main__':

@@ -4,6 +4,10 @@
 
 **在 3 倍超采样画布上画**，最后 BOX 降采样回 296x128。
 这样小字和图标的边缘有真正的抗锯齿 —— 灰度让画面更精细就靠这一步。
+
+**图标不在页面上画**：图标在自己的 28x28 局部画布上画好、量化成掩码，
+再按位置叠进页面（见 icons.py 的说明）。
+
 中文在这里渲染（设备零中文字库，只出 ASCII）。
 """
 
@@ -38,7 +42,10 @@ def _ink_center(draw, text, font, top, cx):
 
 
 def render_weather(weather, fallback_city="城市"):
-    """天气页。
+    """天气页。返回 (清晰层 296x128, 图标列表)。
+
+    图标列表每项是 (ox, oy, 局部清晰层, 局部灰阶层)，
+    由 renderer.page_mask 叠进页面。
 
     版式：没有顶栏。大温度是全屏唯一的锚点，右侧城市 / 天气 / 湿度；
     下半区三天预报：手绘图标 + 高低温两行 + 日期。
@@ -46,8 +53,8 @@ def render_weather(weather, fallback_city="城市"):
     温度等数字都是**字符串**：取不到就是空串，不是 0。
     屏上不显示 0 度的假数据 —— 和 petd 的做法一致。
     """
-    canvas = renderer.new_canvas()
-    d = renderer.draw_on(canvas)
+    crisp = renderer.new_canvas()
+    d = renderer.draw_on(crisp)
     weather = weather or {}
     city = weather.get("city") or fallback_city
     temp = str(weather.get("temp") or "")
@@ -93,11 +100,15 @@ def render_weather(weather, fallback_city="城市"):
     f = renderer.load_font(12)
     margin = 8
     col_w = (W - 2 * margin) / 3.0
+    icon_specs = []
     for i, day in enumerate(days[:3]):
         cx = margin + col_w * (i + 0.5)
         kind = icons.kind_for(day.get("code"))
         if kind:
-            icons.draw_icon(canvas, kind, cx - icons.SIZE / 2, 52)
+            icrisp, itone = icons.render(kind)
+            if icrisp is not None:
+                icon_specs.append(
+                    (int(round(cx - icons.SIZE / 2)), 52, icrisp, itone))
 
         tmax = str(day.get("tmax") or "")
         tmin = str(day.get("tmin") or "")
@@ -110,13 +121,14 @@ def render_weather(weather, fallback_city="城市"):
         label = (date[8:10] + "日") if len(date) >= 10 else date
         if label:
             _ink_center(d, label, f, 106, cx)
-    return renderer.downsample(canvas)
+    return renderer.downsample(crisp), icon_specs
 
 
 def render_calendar(now=None):
+    """月历页。返回 (清晰层 296x128, []) —— 整页都是文字，没有图标。"""
     now = now or datetime.now()
-    canvas = renderer.new_canvas()
-    d = renderer.draw_on(canvas)
+    crisp = renderer.new_canvas()
+    d = renderer.draw_on(crisp)
     renderer.draw_header(d, "%d年%d月" % (now.year, now.month), "CALENDAR")
 
     f_wd = renderer.load_font(14)
@@ -146,4 +158,4 @@ def render_calendar(now=None):
                 d.text((tx, y), txt, font=fnum, fill=255)
             else:
                 d.text((tx, y), txt, font=fnum, fill=0)
-    return renderer.downsample(canvas)
+    return renderer.downsample(crisp), []

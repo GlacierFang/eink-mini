@@ -88,7 +88,11 @@ def _cache_key(page_id):
 
 
 def render_page(page_id):
-    """渲染指定页面，返回 PIL 图片。只读缓存，不碰网络。"""
+    """渲染指定页面，返回 (清晰层, 图标列表)。只读缓存，不碰网络。
+
+    图标列表每项是 (ox, oy, 局部清晰层, 局部灰阶层)，
+    量化时叠进页面（见 renderer.page_mask）。
+    """
     key = _cache_key(page_id)
     now = datetime.now().timestamp()
     with _cache_lock:
@@ -97,14 +101,14 @@ def render_page(page_id):
             return hit[0]
     if page_id == "weather":
         cfg = config_store.get_config()
-        img = pages.render_weather(weather.get_weather(), cfg["city"])
+        layers = pages.render_weather(weather.get_weather(), cfg["city"])
     elif page_id == "calendar":
-        img = pages.render_calendar()
+        layers = pages.render_calendar()
     else:
         raise KeyError(page_id)
     with _cache_lock:
-        _cache[key] = (img, now + 60)
-    return img
+        _cache[key] = (layers, now + 60)
+    return layers
 
 
 def _page_entry(page_id):
@@ -231,10 +235,10 @@ def page_bin(page_id):
     if entry["type"] != "bitmap":
         return Response(status=400)
     try:
-        img = render_page(page_id)
+        crisp, icon_specs = render_page(page_id)
     except KeyError:
         return Response(status=404)
-    data = renderer.image_to_1bpp(img)
+    data = renderer.frame_from_page(crisp, icon_specs)
     resp = Response(data, mimetype="application/octet-stream")
     resp.headers["Content-Length"] = str(len(data))
     device_state.record(
@@ -253,13 +257,14 @@ def preview_png(page_id):
     if not entry:
         return Response(status=404)
     try:
-        img = render_page(page_id)
+        crisp, icon_specs = render_page(page_id)
     except KeyError:
         return Response(status=404)
     if request.args.get("view") == "gray":
-        return Response(renderer.image_to_png(img), mimetype="image/png")
+        # 量化前的灰度中间态，只为调试
+        return Response(renderer.image_to_png(crisp), mimetype="image/png")
     return Response(
-        renderer.image_to_png(renderer.device_view(img)),
+        renderer.image_to_png(renderer.page_view(crisp, icon_specs)),
         mimetype="image/png",
     )
 
