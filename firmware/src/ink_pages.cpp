@@ -84,13 +84,13 @@ void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
 
   // 预设档位指示：几个小方块，当前档反白。
   // 比文字「1/8」直观 —— 一眼看出还有几档。
-  int dot = 6, gap = 4;
-  int total = presetCount * dot + (presetCount - 1) * gap;
+  int dot = 6, pdotGap = 4;
+  int total = presetCount * dot + (presetCount - 1) * pdotGap;
   int dx = INK_W - 6 - total;
   int dy = 22;
   for (int i = 0; i < presetCount; i++) {
-    if (i == presetIndex) c.fillRect(dx + i * (dot + gap), dy, dot, dot, true);
-    else                  c.drawRect(dx + i * (dot + gap), dy, dot, dot, true);
+    if (i == presetIndex) c.fillRect(dx + i * (dot + pdotGap), dy, dot, dot, true);
+    else                  c.drawRect(dx + i * (dot + pdotGap), dy, dot, dot, true);
   }
 
   c.hLine(0, 34, INK_W, true);
