@@ -186,8 +186,8 @@ static const int MERIT_FRAME_SEQ[3] = {1, 2, 0};
 // 服务端按 ?f=N 决定显示哪一帧，只有击打帧计一次功德，
 // 所以三帧请求加起来仍然算敲一下、功德 +1。
 //
-// 帧间隔 450ms：局刷一次约 420ms（GxEPD2_290 partial_refresh_time），
-// 太密会互相覆盖，太疏就不像敲一下。
+// 帧间隔 120ms：局刷一次约 420ms（GxEPD2_290 partial_refresh_time，
+// push() 内部已等刷完），这里只补一点视觉留白。
 static bool knockMeritOnMeritPage()
 {
   if (g_pages.count <= 0 || g_pageIndex >= g_pages.count) return false;
