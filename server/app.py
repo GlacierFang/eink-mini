@@ -337,9 +337,16 @@ def page_bin(page_id):
     if entry["type"] != "bitmap":
         return Response(status=400)
     _frame = merit.FRAME_IDLE
+    # ?f=N：固件显式要哪一帧（木鱼敲击的击打/挥过/静息）。
+    # 带这个参数时不走请求序列启发式 —— 一次按键三帧请求只算一下。
+    _explicit = request.args.get("f")
     try:
         if page_id == merit.MERIT_PAGE_ID:
-            _is_tap, _count, _frame = merit.note_page(_device_key(), page_id)
+            if _explicit is not None:
+                _count, _frame = merit.note_page_explicit(
+                    _device_key(), page_id, int(_explicit))
+            else:
+                _is_tap, _count, _frame = merit.note_page(_device_key(), page_id)
             crisp, icon_specs, tone = pages.render_merit(_count, _frame)
         else:
             merit.note_page(_device_key(), page_id)

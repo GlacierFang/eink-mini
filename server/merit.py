@@ -156,6 +156,36 @@ def tap(source="web", ip=None):
         return {"count": state["count"], "strike": state["strike"]}
 
 
+def note_page_explicit(device_key, page_id, frame):
+    """固件显式指定要显示的帧（请求带 ?f=N）。
+
+    只有击打帧（f=1）计一次功德 —— 一次按键连发三帧请求，
+    算起来还是敲一下、功德 +1。挥过帧和静息帧只是同一次敲击的后续画面。
+
+    返回 (当前计数, 要显示的帧)。
+    """
+    frame = int(frame) % 3
+    if not device_key:
+        return count(), FRAME_IDLE
+    with _locked():
+        state = _read_state()
+        devices = state.setdefault("devices", {})
+        device = devices.setdefault(device_key, {})
+        now = time.time()
+        if page_id == MERIT_PAGE_ID and frame == FRAME_STRIKE:
+            state["count"] = int(state.get("count", 0) or 0) + 1
+            state["strike"] = int(state.get("strike", 0) or 0) + 1
+            state["updated_at"] = int(now)
+            state["last_source"] = "device"
+        # 不动 last_kind / last_page / last_page_at ——
+        # 那是「自动轮询 vs 用户按键」的启发式依据。
+        # 显式帧的敲击请求不参与它，否则三帧请求会把下一次自动轮询
+        # 误判成又敲了一下。
+        _write_state(state)
+        count_v = int(state.get("count", 0) or 0)
+    return count_v, frame
+
+
 def note_manifest(device_key):
     """设备拉了 manifest。记下来 —— 下一次位图请求若紧跟其后，就是自动轮询。"""
     if not device_key:

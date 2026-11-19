@@ -275,13 +275,51 @@ window.addEventListener('hashchange', function () {
   var counter = document.getElementById('fish-count');
   var stage = document.getElementById('fish-stage');
   if (!img || !stage) return;
+  // 三帧先下载并解码，再开始播。
+  // 不预载的话，每次点击都在等网络回来，中间帧还没显示就被下一帧顶掉 ——
+  // 看起来就是「点一下只变一张图」。
   var frames = ['images/1.png', 'images/2.png', 'images/3.png'];
-  var busy = false;
+  // 预载的 Promise 必须留着：第一次点击可能早于解码完成，
+  // 不 await 就直接上屏，中间帧会被下一帧顶掉 —— 看起来只变了一张图。
+  var preload = Promise.all(frames.map(function (u) {
+    return new Promise(function (res) {
+      var im = new Image();
+      im.onload = function () {
+        if (im.decode) im.decode().then(res, res);
+        else res();
+      };
+      im.onerror = function () { res(); };
+      im.src = u;
+    });
+  }));
   var audio = null;
 
+  // 一敲一拍：击打 -> 挥过 -> 回静息。
+  // 素材 1=举槌静息 2=击打 3=挥过，所以播放顺序是 2 -> 3 -> 1。
+  // 三帧连着播完，最后一帧回到静息，不停在挥过帧上。
+  var SEQ = [frames[1], frames[2], frames[0]];
+  var STEP_MS = 100;   // 每帧 100ms，三帧全程 300ms 收尾
+  var playToken = 0;   // 连点时作废旧的一次播放，从头重播
+
+  function playKnock() {
+    var my = ++playToken;
+    preload.then(function () {
+      if (my !== playToken) return;
+      var step = 0;
+      img.src = SEQ[0];
+      (function next() {
+        step++;
+        if (step >= SEQ.length) return;
+        setTimeout(function () {
+          if (my !== playToken) return;
+          img.src = SEQ[step];
+          next();
+        }, STEP_MS);
+      })();
+    });
+  }
+
   function knock() {
-    if (busy) return;
-    busy = true;
     fetch('api/merit/tap', {method: 'POST'})
       .then(function (r) { return r.json(); })
       .then(function (j) {
@@ -289,13 +327,10 @@ window.addEventListener('hashchange', function () {
       })
       .catch(function () {});
     sound();
-    img.src = frames[1];
-    setTimeout(function () { img.src = frames[2]; }, 140);
-    setTimeout(function () { img.src = frames[0]; }, 360);
+    playKnock();
     plus.classList.remove('show');
     void plus.offsetWidth;
     plus.classList.add('show');
-    setTimeout(function () { busy = false; }, 380);
   }
 
   function sound() {

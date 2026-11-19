@@ -174,6 +174,39 @@ static void refreshManifestIfDue()
   }
 }
 
+// 木鱼敲击的帧序：击打 -> 挥过 -> 静息。
+// 帧号与服务端 merit.FRAME_* 一致：0=静息 1=击打 2=挥过。
+// 三帧之间的额外间隔。局刷本身约 420ms，push() 是阻塞的，
+// 所以这个值只是视觉留白，不是节奏主体。
+static const uint32_t MERIT_FRAME_GAP_MS = 120;
+static const int MERIT_FRAME_SEQ[3] = {1, 2, 0};
+
+// 在木鱼页上敲一下：一次按键播三帧。
+//
+// 服务端按 ?f=N 决定显示哪一帧，只有击打帧计一次功德，
+// 所以三帧请求加起来仍然算敲一下、功德 +1。
+//
+// 帧间隔 450ms：局刷一次约 420ms（GxEPD2_290 partial_refresh_time），
+// 太密会互相覆盖，太疏就不像敲一下。
+static bool knockMeritOnMeritPage()
+{
+  if (g_pages.count <= 0 || g_pageIndex >= g_pages.count) return false;
+  if (strcmp(g_pages.items[g_pageIndex].id, "merit") != 0) return false;
+  if (!g_frameBuf) return false;
+  for (int i = 0; i < 3; i++) {
+    if (!g_client.fetchPageFrameAt("merit", MERIT_FRAME_SEQ[i], g_frameBuf, INK_FRAME_BYTES)) {
+      Serial.println("[merit] 取帧失败");
+      break;
+    }
+    g_canvas.loadServerFrame(g_frameBuf, INK_FRAME_BYTES);
+    g_display.push(g_canvas, false);
+    // push() 内部已经等面板刷完（局刷约 420ms），这里只留一点间隔
+    // 让三帧在视觉上分得开；再多等就是白白拖慢节奏。
+    delay(MERIT_FRAME_GAP_MS);
+  }
+  return true;
+}
+
 static void handleKeys()
 {
   InkKey key;
@@ -222,6 +255,7 @@ static void handleKeys()
       } else {
         switch (ev) {
           case INK_EV_SHORT:
+            if (knockMeritOnMeritPage()) break;                  // 木鱼页：一次按键播三帧
             g_lastPageFetchMs = 0;                                // 短按：刷新当前页
             g_dirtyPage = true;                                  // 立刻重绘
             break;

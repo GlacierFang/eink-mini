@@ -56,6 +56,13 @@ bool InkClient::fetchPageFrame(const char* id, uint8_t* dst, size_t dstLen)
   return fetchText(path, dst, dstLen) == dstLen;
 }
 
+bool InkClient::fetchPageFrameAt(const char* id, int frame, uint8_t* dst, size_t dstLen)
+{
+  char path[96];
+  snprintf(path, sizeof(path), "/api/page/%s.bin?f=%d", id, frame);
+  return fetchText(path, dst, dstLen) == dstLen;
+}
+
 bool InkClient::fetchManifest(InkPageList& out)
 {
   out.count = 0;
