@@ -89,7 +89,7 @@ def render_weather(weather, fallback_city="城市"):
     下半区三天预报：手绘图标 + 高低温两行 + 日期。
 
     温度等数字都是**字符串**：取不到就是空串，不是 0。
-    屏上不显示 0 度的假数据 —— 和 petd 的做法一致。
+    屏上不显示 0 度的假数据。
     """
     crisp = renderer.new_canvas()
     d = renderer.draw_on(crisp)

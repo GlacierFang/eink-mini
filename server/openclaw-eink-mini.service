@@ -1,10 +1,13 @@
+# eink-mini 服务端（systemd user unit 示例）
+# 部署时把 WorkingDirectory 改成你自己的实际路径。
+
 [Unit]
-Description=eink-mini 服务端（墨水屏页面下发 + 留言板）
+Description=eink-mini 服务端（墨水屏页面渲染与下发）
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/open/.openclaw/workspace/eink-mini/server
+WorkingDirectory=/opt/eink-mini/server
 ExecStart=/usr/bin/python3 app.py
 Restart=always
 RestartSec=5

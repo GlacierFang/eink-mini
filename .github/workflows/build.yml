@@ -114,7 +114,7 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/flash_args.txt
 
       # artifact 下载主机在部分网络下取不到，Contents API 又有 1MB 限制，
-      # git push 是唯一稳定的通道：日志和固件都走它。
+      # git push 是更可靠的通道：日志和固件都走它。
       - name: 把构建日志推到分支
         if: always()
         env:
@@ -144,7 +144,7 @@ jobs:
           fi
           git push origin "$COMMIT:refs/heads/$BRANCH" && echo "日志已推到 $BRANCH"
 
-      # 固件产物推到 fw-bin 分支 —— 这样国内网络也能拿到 .bin。
+      # 固件产物推到 fw-bin 分支 —— git 通道在受限网络下比 artifact 下载更稳。
       - name: 把固件产物推到分支
         if: success()
         env:
@@ -179,10 +179,10 @@ jobs:
 
       # 建 GitHub Release，.bin 直接挂成附件。
       #
-      # **必须在 CI 里做，不能在本机做**：附件上传走 uploads.github.com，
-      # 而本机出口代理的白名单里没有这个域名，会被挡成 403；
-      # gh release create 上传失败还会把整个 release 撤掉（tag 也一起没了）。
-      # CI 跑在 GitHub 自己的 runner 上，不经过本机代理。
+      # **放在 CI 里做**：附件上传需要能直连 GitHub 的环境，
+      # 本地开发机常受网络策略限制；
+      # 上传失败还可能连带撤销已创建的 Release 与 tag。
+      # runner 跑在 GitHub 上，不受本地网络策略影响。
       - name: 建 GitHub Release
         if: success()
         env:

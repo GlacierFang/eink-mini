@@ -1,12 +1,12 @@
 # eink-mini
 
-2.9 寸黑白电子墨水屏桌面终端：翻页时钟、计时器、天气、月历、单日黄历。
+2.9 寸黑白电子墨水屏桌面终端：翻页时钟、计时器、天气、逐小时、月历、单日黄历。
 
 短按切换画面。设备只当哑终端——位图由配套服务端渲染，设备只负责显示。
 
 ## 现在做到哪一步了
 
-> 🟢 **固件写完，CI 编译通过**（run 44301927815 全绿，head 3ebcfdd）。产物在 `fw-bin` 分支，国内网络可直接 `git clone` 拿到；也有 [Releases](https://github.com/GlacierFang/eink-mini/releases) 可直接下 .bin。
+> 🟢 **固件写完，CI 编译通过**（run 44301927815 全绿，head 3ebcfdd）。产物在 `fw-bin` 分支，`git clone` 即可获取；也有 [Releases](https://github.com/GlacierFang/eink-mini/releases) 可直接下 .bin。
 >
 > 🟢 **真机实测通过**（2026-11-18）：烧录 v0.1.0 后实机运行正常 —— 接线、按键、旋转方向、BUSY 极性、局刷残影、5×7 字库、Unifont 中文、天气图标、计时器状态词、单日黄历页全部核对无误。
 >
@@ -229,8 +229,8 @@ firmware/tools/render_host.sh [输出目录]     # 默认 ../tmp-preview
 Actions 里点 **Run workflow** 手动触发。产物三处都能拿：
 
 - **Releases**（推荐）：Releases 页面直接下 .bin 附件，每次编译一个版本，带改动说明和校验和。
-- **Artifacts**：`eink-mini-firmware`（国内网络常常下不动）
-- **`fw-bin` 分支**（国内可走 git）：
+- **Artifacts**：`eink-mini-firmware`（部分网络下常常下不动）
+- **`fw-bin` 分支**（走 git，通道更稳）：
   ```bash
   git clone --depth 1 --branch fw-bin git@github.com:GlacierFang/eink-mini.git
   ```
@@ -296,7 +296,7 @@ server/
   device_state.py   设备在线状态（最后活动、来源、计数，落盘）
   config_store.py   配置存储（城市、坐标）
   templates/        控制台页面
-  static/console.css 控制台样式（深色主题，沿用 petd 设计令牌）
+  static/console.css 控制台样式（深色主题）
   tools/check_frame.py  位序自检：把 .bin 解回图验证 1=黑
 server/openclaw-eink-mini.service
 ```
@@ -335,7 +335,7 @@ server/openclaw-eink-mini.service
 
 ## 天气取数
 
-照 ai-agent-pet 的 petd 做法：**后台线程取数，渲染路径只读缓存**。
+取数方式：**后台线程取数，渲染路径只读缓存**。
 设备 HTTP 超时 15 秒，服务端在请求处理里同步取数会直接把这一页拉挂 ——
 实测改之前首次拉天气位图要 10 秒以上，改之后稳定在 30-80 毫秒。
 
@@ -451,7 +451,7 @@ dither 那点灰阶收益换不来小字可读性，所以**默认硬阈值 165*
 
 ## 控制台
 
-深色单页，标签页布局，设计令牌沿用 petd 后台：
+深色单页，标签页布局：
 
 - 标签页：设备 / 时钟 / 计时器 / 天气 / 月历 / 黄历 —— **一个功能一区，配置和预览同区**
 - 设备页：在线状态、最后活动、来源 IP、UA、拉取次数、设备连接参数
@@ -462,9 +462,14 @@ dither 那点灰阶收益换不来小字可读性，所以**默认硬阈值 165*
 
 ## 许可
 
-仓库代码 MIT。vendored 依赖各自保留上游许可：
+服务端与工具代码 MIT。vendored 依赖各自保留上游许可：
 
 | 目录 | 上游 | 许可 |
 |---|---|---|
 | `firmware/lib/GxEPD2/` | GxEPD2 最小子集 | **GPL-3.0** |
 | `server/lunar_python/` | lunar-python（6tail） | **MIT** |
+
+固件二进制链接了 GPL-3.0 的 GxEPD2，因此**作为合并作品按 GPL-3.0 分发**。
+对应源码即本仓库 `firmware/` 目录，完整 GPL-3.0 文本见 `firmware/lib/GxEPD2/LICENSE`。
+
+架构与协议细节见 [`docs/architecture.md`](docs/architecture.md)。
