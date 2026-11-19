@@ -269,3 +269,50 @@ button:hover { background: rgba(31, 111, 235, .3); }
 .msg { font-size: 12px; min-height: 18px; margin-top: 6px; }
 .msg.ok { color: var(--ok); }
 .msg.bad { color: var(--bad); }
+
+/* 赛博木鱼 */
+.fish-stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  min-height: 230px;
+  cursor: pointer;
+  user-select: none;
+}
+.fish-stage:hover { border-color: var(--accent); }
+.fish-stage img {
+  display: block;
+  width: 170px;
+  max-width: 72%;
+  height: auto;
+  background: #fff;
+  border-radius: 6px;
+}
+.fish-plus {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  color: var(--ok);
+  font-size: 14px;
+  opacity: 0;
+  transform: translateY(8px);
+}
+.fish-plus.show { animation: fish-plus 0.9s ease-out; }
+@keyframes fish-plus {
+  0%   { opacity: 0; transform: translateY(10px); }
+  18%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-14px); }
+}
+.fish-count {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 34px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+}

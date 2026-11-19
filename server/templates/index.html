@@ -133,10 +133,23 @@
           </div>
           <p class="note">设备真正收到的就是这张 1bpp 位图。渲染走 3 倍超采样 + 灰度抗锯齿，
             再量化成黑白，所以小字和图标边缘是连贯的，不是阶梯。</p>
+          {% if f.id == 'merit' %}
+          <p class="note">设备端在木鱼页按 <strong>B 键</strong>就是敲一下：立刻 +1，
+            同时显示击打帧；约 30 秒后设备自动重拉，回到静息帧。</p>
+          {% endif %}
           {% endif %}
         </div>
 
         <div class="card">
+          {% if f.id == 'merit' %}
+          <h2>赛博木鱼 <span class="muted">WEB</span></h2>
+          <div class="fish-stage" id="fish-stage" title="点一下，敲一记">
+            <img id="fish-img" src="images/1.png" alt="木鱼">
+            <span class="fish-plus" id="fish-plus">功德 +1</span>
+          </div>
+          <div class="fish-count"><span id="fish-count">{{ merit_count }}</span></div>
+          <p class="note">点木鱼敲一下，功德 +1。只增不减，不按天清零 —— 和设备上那个是同一个计数。</p>
+          {% else %}
           <h2>配置</h2>
           {% if f.fields %}
             {% for fld in f.fields %}
@@ -184,6 +197,7 @@
             <p class="note">还没有取到逐小时数据。后台线程在取，可能上游暂时不通。</p>
             {% endif %}
           </div>
+          {% endif %}
           {% endif %}
         </div>
 
@@ -253,6 +267,68 @@ window.addEventListener('hashchange', function () {
   var h = (location.hash || '').replace('#', '');
   if (h) switchTab(h);
 });
+
+// ---- 赛博木鱼 ----
+(function () {
+  var img = document.getElementById('fish-img');
+  var plus = document.getElementById('fish-plus');
+  var counter = document.getElementById('fish-count');
+  var stage = document.getElementById('fish-stage');
+  if (!img || !stage) return;
+  var frames = ['images/1.png', 'images/2.png', 'images/3.png'];
+  var busy = false;
+  var audio = null;
+
+  function knock() {
+    if (busy) return;
+    busy = true;
+    fetch('api/merit/tap', {method: 'POST'})
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && typeof j.count === 'number') counter.textContent = j.count;
+      })
+      .catch(function () {});
+    sound();
+    img.src = frames[1];
+    setTimeout(function () { img.src = frames[2]; }, 140);
+    setTimeout(function () { img.src = frames[0]; }, 360);
+    plus.classList.remove('show');
+    void plus.offsetWidth;
+    plus.classList.add('show');
+    setTimeout(function () { busy = false; }, 380);
+  }
+
+  function sound() {
+    try {
+      if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+      if (audio.state === 'suspended') audio.resume();
+      var t = audio.currentTime;
+      var osc = audio.createOscillator();
+      var og = audio.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(230, t);
+      osc.frequency.exponentialRampToValueAtTime(90, t + 0.09);
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.exponentialRampToValueAtTime(0.5, t + 0.006);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      osc.connect(og).connect(audio.destination);
+      osc.start(t); osc.stop(t + 0.24);
+      var len = Math.floor(audio.sampleRate * 0.05);
+      var buf = audio.createBuffer(1, len, audio.sampleRate);
+      var ch = buf.getChannelData(0);
+      for (var i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+      var src = audio.createBufferSource();
+      src.buffer = buf;
+      var bp = audio.createBiquadFilter();
+      bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.2;
+      var ng = audio.createGain(); ng.gain.value = 0.22;
+      src.connect(bp).connect(ng).connect(audio.destination);
+      src.start(t);
+    } catch (e) {}
+  }
+
+  stage.addEventListener('click', knock);
+})();
 </script>
 </body>
 </html>

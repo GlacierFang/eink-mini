@@ -16,11 +16,43 @@ from datetime import datetime
 
 import almanac
 import icons
+import merit
 import renderer
 from weather import describe_short
 
 W = renderer.W
 H = renderer.H
+
+
+def render_merit(count, frame=0):
+    """赛博木鱼页。返回 (清晰层, [], None)。
+
+    版式：左边木鱼占满屏高，右边「功德」+ 大号数字。
+    数字随位数变大自动降档 —— 功德只增不减，迟早会到五位、六位。
+    """
+    crisp = renderer.new_canvas()
+    # 素材 120x120，放大到 372 实际像素（= 124 逻辑像素），贴到左上。
+    crisp.paste(merit.frame_gray(frame, 372), (18, 6))
+    d = renderer.draw_on(crisp)
+
+    # 下面是逻辑坐标（draw_on 自己放大）。
+    right = renderer.W - 12
+
+    label_font = renderer.load_font(18, bold=True)
+    lb = d.textbbox((0, 0), "功德", font=label_font)
+    d.text((right - (lb[2] - lb[0]), 16), "功德", font=label_font, fill=0)
+
+    num = str(count)
+    font = renderer.load_font(52, bold=True)
+    for size in (52, 46, 40, 34, 28, 24, 20):
+        font = renderer.load_font(size, bold=True)
+        nb = d.textbbox((0, 0), num, font=font)
+        if nb[2] - nb[0] <= right - 134:
+            break
+    nb = d.textbbox((0, 0), num, font=font)
+    d.text((right - (nb[2] - nb[0]), 44), num, font=font, fill=0)
+
+    return renderer.downsample(crisp), [], None
 
 WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"]
 

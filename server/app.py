@@ -10,6 +10,9 @@
   GET  /api/config             读配置
   POST /api/config             改配置
   GET  /api/device             设备在线状态
+  GET  /api/merit              当前累计功德
+  POST /api/merit/tap          敲一下（count +1）
+  GET  /images/<n>.png         木鱼素材三帧
 """
 
 import hashlib
@@ -21,6 +24,7 @@ from flask import Flask, Response, jsonify, render_template, request
 
 import config_store
 import device_state
+import merit
 import native_render
 import pages
 import renderer
@@ -54,6 +58,15 @@ PAGES = [
         "title": "时钟",
         "label": "CLOCK",
         "desc": "设备本地渲染的翻页钟，断网也能显示，不消耗服务端。",
+        "fields": [],
+    },
+    {
+        "id": "merit",
+        "type": "bitmap",
+        "title": "赛博木鱼",
+        "label": "MERIT",
+        "desc": "敲一下木鱼，功德 +1。只增不减，永不清零。设备端在木鱼页按 B 键，"
+                "网页端点木鱼，两边共用同一个计数。",
         "fields": [],
     },
     {
@@ -124,6 +137,9 @@ def render_page(page_id):
     图标列表每项是 (ox, oy, 局部清晰层, 局部灰阶层)，
     量化时叠进页面（见 renderer.page_mask）。
     """
+    if page_id == merit.MERIT_PAGE_ID:
+        # 功德每敲一次就变，不能缓存
+        return pages.render_merit(merit.count(), merit.FRAME_IDLE)
     key = _cache_key(page_id)
     now = datetime.now().timestamp()
     with _cache_lock:
@@ -207,6 +223,7 @@ def index():
         hourly_city=hourly_city,
         hourly_at=weather.get_weather_at("hourly"),
         native_meta=native_meta,
+        merit_count=merit.count(),
     )
 
 
@@ -260,6 +277,8 @@ def _page_version(page_id):
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
     elif page_id == "almanac":
         seed = "almanac|%s" % datetime.now().strftime("%Y%m%d")
+    elif page_id == merit.MERIT_PAGE_ID:
+        seed = "merit|%d" % merit.count()
     else:
         seed = "clock|local"
     return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
@@ -296,12 +315,18 @@ def manifest():
             "pages": pages_out,
         }
     )
+    merit.note_manifest(_device_key())
     device_state.record(
         "manifest.json",
         ip=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
     )
     return resp
+
+
+def _device_key():
+    """设备标识：IP + UA。用来分辨「自动轮询」和「用户按 B 键」。"""
+    return "%s|%s" % (request.remote_addr or "-", request.headers.get("User-Agent", ""))
 
 
 @app.route("/api/page/<page_id>.bin")
@@ -311,11 +336,22 @@ def page_bin(page_id):
         return Response(status=404)
     if entry["type"] != "bitmap":
         return Response(status=400)
+    _frame = merit.FRAME_IDLE
     try:
-        crisp, icon_specs, tone = render_page(page_id)
+        if page_id == merit.MERIT_PAGE_ID:
+            _is_tap, _count, _frame = merit.note_page(_device_key(), page_id)
+            crisp, icon_specs, tone = pages.render_merit(_count, _frame)
+        else:
+            merit.note_page(_device_key(), page_id)
+            crisp, icon_specs, tone = render_page(page_id)
     except KeyError:
         return Response(status=404)
-    data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
+    if page_id == merit.MERIT_PAGE_ID:
+        # 挥过帧的残影是浅色虚线，硬阈值 165 会吃掉它 —— 这帧放宽到 190
+        thr = 190 if _frame == merit.FRAME_SWING else renderer.DEFAULT_THRESHOLD
+        data = renderer.frame_from_page(crisp, icon_specs, threshold=thr, tone=tone)
+    else:
+        data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
     resp = Response(data, mimetype="application/octet-stream")
     resp.headers["Content-Length"] = str(len(data))
     device_state.record(
@@ -403,6 +439,33 @@ def set_cfg():
                 daemon=True,
             ).start()
     return jsonify({"ok": True, "config": cfg})
+
+
+@app.route("/api/merit")
+def merit_state():
+    """当前累计功德。"""
+    return jsonify(merit.stats())
+
+
+@app.route("/api/merit/tap", methods=["POST"])
+def merit_tap():
+    """网页端敲一下。只加 1，不接受任意值。"""
+    result = merit.tap(source="web", ip=request.remote_addr)
+    if result is None:
+        return jsonify({"ok": False, "error": "敲太快了，稍等一下"}), 429
+    result["ok"] = True
+    return jsonify(result)
+
+
+@app.route("/images/<name>.png")
+def merit_image(name):
+    """木鱼三帧素材。"""
+    if name not in ("1", "2", "3"):
+        return Response(status=404)
+    path = merit.frame_path(int(name) - 1)
+    if not path.exists():
+        return Response(status=404)
+    return Response(path.read_bytes(), mimetype="image/png")
 
 
 @app.route("/api/device")
