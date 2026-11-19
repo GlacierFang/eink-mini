@@ -113,37 +113,6 @@ jobs:
             firmware/.pio/build/esp32-c3-pro-mini/eink-mini-merged.bin
             firmware/.pio/build/esp32-c3-pro-mini/flash_args.txt
 
-      # artifact 下载主机在部分网络下取不到，Contents API 又有 1MB 限制，
-      # git push 是更可靠的通道：日志和固件都走它。
-      - name: 把构建日志推到分支
-        if: always()
-        env:
-          SHA: ${{ github.sha }}
-          BRANCH: ci-logs
-        working-directory: firmware
-        run: |
-          set +e
-          git config user.name 'ci'
-          git config user.email 'ci@local'
-          cp build.log "ci-build-$SHA.log"
-          BLOB=$(git hash-object -w "ci-build-$SHA.log")
-          BASE=''
-          if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
-            git fetch --depth 1 origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
-            BASE=$(git rev-parse "refs/remotes/origin/$BRANCH")
-          fi
-          TMPIDX=$(mktemp)
-          export GIT_INDEX_FILE=$TMPIDX
-          if [ -n "$BASE" ]; then git read-tree "$BASE^{tree}"; else git read-tree --empty; fi
-          git update-index --add --cacheinfo 100644,$BLOB,"ci/build-$SHA.log"
-          TREE=$(git write-tree)
-          if [ -n "$BASE" ]; then
-            COMMIT=$(git commit-tree "$TREE" -p "$BASE" -m "ci: build log $SHA")
-          else
-            COMMIT=$(git commit-tree "$TREE" -m "ci: build log $SHA")
-          fi
-          git push origin "$COMMIT:refs/heads/$BRANCH" && echo "日志已推到 $BRANCH"
-
       # 固件产物推到 fw-bin 分支 —— git 通道在受限网络下比 artifact 下载更稳。
       - name: 把固件产物推到分支
         if: success()
