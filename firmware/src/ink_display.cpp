@@ -230,14 +230,6 @@ bool InkDisplay::begin()
   return true;
 }
 
-bool InkDisplay::forceFullRefresh()
-{
-  if (!g_panel) return false;
-  bool ok = writeFullFrame(newFrame_);
-  lastFullMs_ = millis();
-  return ok;
-}
-
 bool InkDisplay::push(const InkCanvas& canvas, bool forceFull)
 {
   if (!g_panel) return false;

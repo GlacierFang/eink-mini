@@ -58,11 +58,17 @@ bool InkClient::fetchPageFrame(const char* id, uint8_t* dst, size_t dstLen)
   return fetchText(path, dst, dstLen) == dstLen;
 }
 
-bool InkClient::fetchPageFrameAt(const char* id, int frame, uint8_t* dst, size_t dstLen)
+bool InkClient::fetchPageFrames(const char* id, const int* frames, int frameCount,
+                                uint8_t* dst, size_t frameLen)
 {
+  if (frameCount <= 0 || frameCount > 8) return false;
   char path[96];
-  snprintf(path, sizeof(path), "/api/page/%s.bin?f=%d", id, frame);
-  return fetchText(path, dst, dstLen) == dstLen;
+  int n = snprintf(path, sizeof(path), "/api/page/%s.bin?f=", id);
+  for (int i = 0; i < frameCount; i++) {
+    n += snprintf(path + n, sizeof(path) - n, "%s%d", (i ? "," : ""), frames[i]);
+  }
+  size_t total = frameLen * (size_t)frameCount;
+  return fetchText(path, dst, total) == total;
 }
 
 bool InkClient::reportDeviceState(const char* pageId, const char* timerState,

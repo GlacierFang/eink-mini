@@ -75,7 +75,7 @@ PAGES = [
         "title": "计时器",
         "label": "TIMER",
         "desc": "设备本地倒计时。预设固定在固件里，不消耗服务端；"
-                "B 短按启停、B 长按重置、A 长按换预设。",
+                "B 短按启停、B 长按回满、A 长按换预设。",
         "fields": [],
     },
     {
@@ -333,6 +333,15 @@ def _device_key():
     return "%s|%s" % (request.remote_addr or "-", request.headers.get("User-Agent", ""))
 
 
+def _merit_frame_bytes(crisp, icon_specs, tone, frame):
+    """木鱼一帧的 1bpp 位图。
+
+    挥过帧的残影是浅色虚线，硬阈值 165 会吃掉它 —— 这帧放宽到 190。
+    """
+    thr = 190 if frame == merit.FRAME_SWING else renderer.DEFAULT_THRESHOLD
+    return renderer.frame_from_page(crisp, icon_specs, threshold=thr, tone=tone)
+
+
 @app.route("/api/page/<page_id>.bin")
 def page_bin(page_id):
     entry = _page_entry(page_id)
@@ -344,25 +353,39 @@ def page_bin(page_id):
     # ?f=N：固件显式要哪一帧（木鱼敲击的击打/挥过/静息）。
     # 带这个参数时不走请求序列启发式 —— 一次按键三帧请求只算一下。
     _explicit = request.args.get("f")
+    # ?f=1,2,0：一次要多帧（木鱼敲击的三帧一次取回，少两次公网往返）
+    _frames = None
+    if _explicit is not None:
+        try:
+            _frames = [int(x) for x in _explicit.split(",") if x.strip() != ""]
+        except ValueError:
+            _frames = None
     try:
         if page_id == merit.MERIT_PAGE_ID:
-            if _explicit is not None:
+            if _frames and len(_frames) > 1:
+                # 多帧一次取回：同一个计数渲染全部帧，拼在一起返回。
+                _count = merit.note_page_explicit_batch(
+                    _device_key(), page_id, _frames)
+                chunks = []
+                for _f in _frames:
+                    crisp, icon_specs, tone = pages.render_merit(_count, _f)
+                    chunks.append(_merit_frame_bytes(crisp, icon_specs, tone, _f))
+                data = b"".join(chunks)
+            elif _frames:
                 _count, _frame = merit.note_page_explicit(
-                    _device_key(), page_id, int(_explicit))
+                    _device_key(), page_id, _frames[0])
+                crisp, icon_specs, tone = pages.render_merit(_count, _frame)
+                data = _merit_frame_bytes(crisp, icon_specs, tone, _frame)
             else:
                 _is_tap, _count, _frame = merit.note_page(_device_key(), page_id)
-            crisp, icon_specs, tone = pages.render_merit(_count, _frame)
+                crisp, icon_specs, tone = pages.render_merit(_count, _frame)
+                data = _merit_frame_bytes(crisp, icon_specs, tone, _frame)
         else:
             merit.note_page(_device_key(), page_id)
             crisp, icon_specs, tone = render_page(page_id)
+            data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
     except KeyError:
         return Response(status=404)
-    if page_id == merit.MERIT_PAGE_ID:
-        # 挥过帧的残影是浅色虚线，硬阈值 165 会吃掉它 —— 这帧放宽到 190
-        thr = 190 if _frame == merit.FRAME_SWING else renderer.DEFAULT_THRESHOLD
-        data = renderer.frame_from_page(crisp, icon_specs, threshold=thr, tone=tone)
-    else:
-        data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
     resp = Response(data, mimetype="application/octet-stream")
     resp.headers["Content-Length"] = str(len(data))
     device_state.record(

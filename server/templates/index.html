@@ -58,10 +58,10 @@
         <h2>按键</h2>
         <p class="note">两颗都是<strong>外接微动开关</strong>，一脚接引脚、一脚接 GND，固件用内部上拉。</p>
         <div class="keymap">
-          <div class="keymap-row"><span class="k">A 键（GPIO5）</span><span class="v">短按 下一页 · 长按 计时器页换预设 / 其它页立即全刷清残影</span></div>
-          <div class="keymap-row"><span class="k">B 键（GPIO2）</span><span class="v">短按 刷新当前页 · 长按 进入配网</span></div>
+          <div class="keymap-row"><span class="k">A 键（GPIO5）</span><span class="v">短按 下一页 · 长按 计时器页换预设时段</span></div>
+          <div class="keymap-row"><span class="k">B 键（GPIO2）</span><span class="v">短按 计时器页启停 / 木鱼页敲一下 · 长按 计时器页回满 / 其它页配网</span></div>
         </div>
-        <p class="note">计时器页上 B 键是计时器专用：短按 启停 · 长按 重置；换预设在 A 键长按。</p>
+        <p class="note">计时器页上 B 键是计时器专用：短按 启停 · 长按 回满；换预设在 A 键长按。</p>
         <p class="note">上电和复位时别按住 B 键 —— GPIO2 是启动采样脚，按住会进下载模式。</p>
       </div>
 
@@ -119,7 +119,7 @@
           </p>
           <div class="keymap">
             <div class="keymap-row"><span class="k">B 短按</span><span class="v">开始 / 暂停 / 继续，归零后再按重新开始</span></div>
-            <div class="keymap-row"><span class="k">B 长按</span><span class="v">重置回满</span></div>
+            <div class="keymap-row"><span class="k">B 长按</span><span class="v">回满</span></div>
             <div class="keymap-row"><span class="k">A 短按</span><span class="v">下一页</span></div>
             <div class="keymap-row"><span class="k">A 长按</span><span class="v">换下一个预设（任何状态都生效，换完按新预设重新开始）</span></div>
           </div>

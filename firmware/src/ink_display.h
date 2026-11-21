@@ -23,9 +23,6 @@ public:
   // 把画布推上屏。forceFull=true 时强制全刷（清残影）。
   bool push(const InkCanvas& canvas, bool forceFull);
 
-  // 强制一次全刷（不改内容，只重刷当前帧）。
-  bool forceFullRefresh();
-
   // 距离上次全刷是否已超过间隔。
   bool dueForFullRefresh(uint32_t nowMs) const;
 

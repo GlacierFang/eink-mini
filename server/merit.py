@@ -14,6 +14,7 @@ import json
 import os
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image
@@ -112,17 +113,29 @@ def frame_path(frame):
     return IMAGE_DIR / FRAME_FILES.get(frame, FRAME_FILES[FRAME_IDLE])
 
 
+@lru_cache(maxsize=16)
+def _frame_rgba_scaled(frame, px):
+    """素材帧 -> 缩放好的 RGBA。缓存住，因为 LANCZOS 缩放很贵（36ms）。
+
+    素材是固定文件，进程内不会变。改了图片要重启服务才生效。
+    """
+    path = frame_path(frame)
+    if not path.exists():
+        return None
+    rgba = Image.open(path).convert("RGBA")
+    if rgba.size != (px, px):
+        rgba = rgba.resize((px, px), Image.LANCZOS)
+    return rgba
+
+
 def frame_gray(frame, px):
     """素材帧 -> 灰度图（白底），px 是输出边长。
 
     PNG 是 RGBA：先按 alpha 合成到白底再转灰度，透明区是白不是黑。
     """
-    path = frame_path(frame)
-    if not path.exists():
+    rgba = _frame_rgba_scaled(frame, px)
+    if rgba is None:
         return Image.new("L", (px, px), 255)
-    rgba = Image.open(path).convert("RGBA")
-    if rgba.size != (px, px):
-        rgba = rgba.resize((px, px), Image.LANCZOS)
     white = Image.new("L", (px, px), 255)
     white.paste(rgba.convert("L"), (0, 0), rgba.split()[3])
     return white
@@ -184,6 +197,33 @@ def note_page_explicit(device_key, page_id, frame):
         _write_state(state)
         count_v = int(state.get("count", 0) or 0)
     return count_v, frame
+
+
+def note_page_explicit_batch(device_key, page_id, frames):
+    """固件一次要多帧（请求带 ?f=1,2,0 —— 木鱼敲击的三帧）。
+
+    为什么合并成一次请求：设备走 frp 隧道到公网域名，一次往返约 450ms，
+    分三次请求就是 1.4 秒，比面板刷新本身（3 × 420ms）还慢。
+
+    计数语义和逐帧请求完全一致：**只有击打帧（f=1）计一次功德**，
+    三帧一次取回也算敲一下、功德 +1。三帧用同一个计数渲染。
+
+    返回渲染用的计数。
+    """
+    frames = [int(f) % 3 for f in frames]
+    if not device_key:
+        return count()
+    with _locked():
+        state = _read_state()
+        count_v = int(state.get("count", 0) or 0)
+        if FRAME_STRIKE in frames:
+            count_v += 1
+            state["count"] = count_v
+            state["strike"] = int(state.get("strike", 0) or 0) + 1
+            state["updated_at"] = int(time.time())
+            state["last_source"] = "device"
+            _write_state(state)
+    return count_v
 
 
 def note_manifest(device_key):

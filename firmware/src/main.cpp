@@ -35,8 +35,6 @@ static InkTimer   g_timer;
 static InkPageList g_pages;
 static int      g_pageIndex = 0;
 static uint32_t g_lastManifestMs = 0;
-// 用户手动要求重拉当前位图（B 短按）。
-static bool     g_forceRefresh = false;
 // 计时器刚归零 —— 等一次全刷（设备没蜂鸣器，视觉是唯一提醒）。
 static bool     g_timerJustDone = false;
 // 切页：下一次重绘做一次全刷。
@@ -123,7 +121,6 @@ static bool currentPageNeedsFetch()
   if (!currentIsBitmap()) return false;
   const InkPageEntry& e = g_pages.items[g_pageIndex];
   if (!g_pageCached[g_pageIndex] || !g_pageCache[g_pageIndex]) return true;
-  if (g_forceRefresh) return true;
   if (!e.hasApplied) return true;
   return e.version != e.appliedVersion;
 }
@@ -158,7 +155,7 @@ static bool renderCurrentPage()
     // 拉取节流在 loop() 里做，这里只管「这一页要不要重新拉」。
     const InkPageEntry& e = g_pages.items[g_pageIndex];
     bool cached = g_pageCached[g_pageIndex] && g_pageCache[g_pageIndex] != nullptr;
-    bool needFetch = !cached || g_forceRefresh || !e.hasApplied || e.version != e.appliedVersion;
+    bool needFetch = !cached || !e.hasApplied || e.version != e.appliedVersion;
     if (needFetch && g_frameBuf && g_client.fetchPageFrame(curId, g_frameBuf, INK_FRAME_BYTES)) {
       if (!g_pageCache[g_pageIndex]) g_pageCache[g_pageIndex] = (uint8_t*)malloc(INK_FRAME_BYTES);
       if (g_pageCache[g_pageIndex]) {
@@ -169,7 +166,6 @@ static bool renderCurrentPage()
       // 真拉到并上屏了，才记下这个版本 —— 拉失败下一轮还会再试。
       g_pages.items[g_pageIndex].appliedVersion = e.version;
       g_pages.items[g_pageIndex].hasApplied = true;
-      g_forceRefresh = false;
       return true;
     }
     if (needFetch) {
@@ -277,35 +273,84 @@ static void reportDeviceStateIfDue(bool force)
 
 // 木鱼敲击的帧序：击打 -> 挥过 -> 静息。
 // 帧号与服务端 merit.FRAME_* 一致：0=静息 1=击打 2=挥过。
-// 三帧之间的额外间隔。局刷本身约 420ms，push() 是阻塞的，
-// 所以这个值只是视觉留白，不是节奏主体。
-static const uint32_t MERIT_FRAME_GAP_MS = 120;
+//
+// 三帧一次取回（服务端拼成一段返回），不是分三次请求 ——
+// 设备走公网链路（frp 隧道到 ruohan.site），一次往返 300ms 起，
+// 分三次就是 1 秒多的纯等待。
+//
+// 连播不在按键处理里同步做完：那样 loop 有近 3 秒不跑，按键不被
+// 采样 —— 敲第二下直接被吞。现在按键只置标志，loop 里一帧一帧推进。
 static const int MERIT_FRAME_SEQ[3] = {1, 2, 0};
 
-// 在木鱼页上敲一下：一次按键播三帧。
-//
-// 服务端按 ?f=N 决定显示哪一帧，只有击打帧计一次功德，
-// 所以三帧请求加起来仍然算敲一下、功德 +1。
-//
-// 帧间隔 120ms：局刷一次约 420ms（GxEPD2_290 partial_refresh_time，
-// push() 内部已等刷完），这里只补一点视觉留白。
-static bool knockMeritOnMeritPage()
+enum MeritAnimState : uint8_t {
+  MERIT_ANIM_IDLE = 0,
+  MERIT_ANIM_FETCH,   // 去服务器取三帧
+  MERIT_ANIM_PLAY     // 一帧一帧上屏
+};
+
+static uint8_t  g_meritAnim = MERIT_ANIM_IDLE;
+static uint8_t  g_meritAnimIdx = 0;
+static bool     g_meritQueued = false;   // 动画期间又敲了一下 -> 排队再来一次
+static uint8_t* g_meritBuf = nullptr;    // 三帧的缓存（3 × INK_FRAME_BYTES）
+
+// 当前是不是木鱼页
+static bool onMeritPage()
 {
   if (g_pages.count <= 0 || g_pageIndex >= g_pages.count) return false;
-  if (strcmp(g_pages.items[g_pageIndex].id, "merit") != 0) return false;
-  if (!g_frameBuf) return false;
-  for (int i = 0; i < 3; i++) {
-    if (!g_client.fetchPageFrameAt("merit", MERIT_FRAME_SEQ[i], g_frameBuf, INK_FRAME_BYTES)) {
-      Serial.println("[merit] 取帧失败");
-      break;
-    }
-    g_canvas.loadServerFrame(g_frameBuf, INK_FRAME_BYTES);
-    g_display.push(g_canvas, false);
-    // push() 内部已经等面板刷完（局刷约 420ms），这里只留一点间隔
-    // 让三帧在视觉上分得开；再多等就是白白拖慢节奏。
-    delay(MERIT_FRAME_GAP_MS);
+  return strcmp(g_pages.items[g_pageIndex].id, "merit") == 0;
+}
+
+// 木鱼连播：一步一帧。
+//
+// 整段动画原来在按键处理里同步做完（3 次往返 + 3 次局刷 + 2 次间隔
+// ≈ 2.8 秒），这期间 loop 不跑、按键不采样。
+// 现在按键只置标志，这里分步推进：
+//   1) 一次往返把三帧全取回来
+//   2) 一帧一帧上屏，面板局刷 420ms/帧是硬件下限，三帧至少 1.26 秒
+static void meritAnimStep()
+{
+  if (g_meritAnim == MERIT_ANIM_IDLE) return;
+
+  // 动画期间切走了页 -> 停掉。帧是木鱼页的，播到别的页上就是乱码。
+  if (!onMeritPage()) {
+    g_meritAnim = MERIT_ANIM_IDLE;
+    g_meritQueued = false;
+    return;
   }
-  return true;
+
+  if (g_meritAnim == MERIT_ANIM_FETCH) {
+    // 三帧 14208 字节。懒分配 —— 不用木鱼页就不占这块内存。
+    if (!g_meritBuf) {
+      g_meritBuf = (uint8_t*)malloc(3 * INK_FRAME_BYTES);
+      if (!g_meritBuf) {
+        Serial.println("[merit] 内存不足");
+        g_meritAnim = MERIT_ANIM_IDLE;
+        return;
+      }
+    }
+    if (!g_client.fetchPageFrames("merit", MERIT_FRAME_SEQ, 3, g_meritBuf, INK_FRAME_BYTES)) {
+      Serial.println("[merit] 取帧失败");
+      g_meritAnim = MERIT_ANIM_IDLE;
+      return;
+    }
+    g_meritAnimIdx = 0;
+    g_meritAnim = MERIT_ANIM_PLAY;
+  }
+
+  if (g_meritAnim == MERIT_ANIM_PLAY) {
+    const uint8_t* f = g_meritBuf + (size_t)g_meritAnimIdx * INK_FRAME_BYTES;
+    g_canvas.loadServerFrame(f, INK_FRAME_BYTES);
+    g_display.push(g_canvas, false);
+    g_meritAnimIdx++;
+    if (g_meritAnimIdx >= 3) {
+      g_meritAnim = MERIT_ANIM_IDLE;
+      // 动画期间又敲了一下：接着再播一轮
+      if (g_meritQueued) {
+        g_meritQueued = false;
+        g_meritAnim = MERIT_ANIM_FETCH;
+      }
+    }
+  }
 }
 
 static void handleKeys()
@@ -338,10 +383,9 @@ static void handleKeys()
             g_stateReportDirty = true;
             g_stateReportAtMs = millis() + 2000;
             Serial.printf("[timer] A 长按 -> 预设 %d 分钟\n", g_timer.presetMinutes());
-          } else {
-            g_display.forceFullRefresh();  // 其它页：长按立即全刷
-            Serial.println("[key] A 长按：全刷");
           }
+          // 其它页：A 长按不做任何事。切页全刷 + 周期全刷已经够清残影，
+          // 再加一个「手动全刷」就是第三个多余能力。
           break;
         default: break;
       }
@@ -371,9 +415,20 @@ static void handleKeys()
       } else {
         switch (ev) {
           case INK_EV_SHORT:
-            if (knockMeritOnMeritPage()) break;                  // 木鱼页：一次按键播三帧
-            g_forceRefresh = true;                                // 短按：强制重拉当前页
-            g_dirtyPage = true;                                  // 立刻重绘
+            if (onMeritPage()) {
+              // 木鱼页：敲一下。
+              //
+              // 只置标志，不在这里同步播完 —— 连播是 3 帧 × 局刷 420ms
+              // ≈ 1.3 秒，同步做的话这段时间 loop 不跑、按键不采样。
+              // 由 meritAnimStep() 在 loop 里一帧一帧推进。
+              if (g_meritAnim == MERIT_ANIM_IDLE) {
+                g_meritAnim = MERIT_ANIM_FETCH;
+              } else {
+                g_meritQueued = true;   // 动画期间又敲了一下 -> 播完再来一轮
+              }
+            }
+            // 其它页：B 短按不做任何事。位图内容按 manifest 里的版本
+            // 自动更新，手动重拉是冗余的第二条路径。
             break;
           case INK_EV_LONG:
             Serial.println("[key] B 长按：进入配置模式");
@@ -425,6 +480,16 @@ void setup()
 void loop()
 {
   handleKeys();
+
+  // 木鱼连播：自己管自己的渲染，一帧一帧推进。
+  //
+  // 动画期间不走下面的常规重绘 —— manifest 带来的页面重绘会把动画帧
+  // 盖掉，三帧连播就断了。
+  //
+  // FETCH 阶段那一次网络往返（约 300ms）是唯一还在 blocking 的地方，
+  // 但它只发生一次，不是三次。
+  bool meritBusy = (g_meritAnim != MERIT_ANIM_IDLE);
+  if (meritBusy) meritAnimStep();
 
   uint32_t now = millis();
   refreshManifestIfDue();
@@ -498,12 +563,12 @@ void loop()
     }
   }
 
-  if (doRender && renderCurrentPage()) {
+  if (!meritBusy && doRender && renderCurrentPage()) {
     g_display.push(g_canvas, doFull);
   }
 
   // 局刷累计到一定时长，做一次全刷清残影
-  if (g_display.dueForFullRefresh(now)) {
+  if (!meritBusy && g_display.dueForFullRefresh(now)) {
     renderCurrentPage();
     g_display.push(g_canvas, true);
     Serial.println("[display] 定期全刷");
