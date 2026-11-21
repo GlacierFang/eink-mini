@@ -101,7 +101,7 @@ static void renderSheet(const char* out)
     uint32_t secs[4]      = { 900, 754, 754, 0 };
     for (int i = 0; i < 4; i++) {
       InkCanvas c;
-      inkRenderTimerPage(c, labels[i], secs[i]);
+      inkRenderTimerPage(c, labels[i], secs[i], 4);
       snprintf(path, sizeof(path), "%s/host-timer-%s.pgm", out, names[i]);
       writePGM(path, c);
     }
@@ -152,7 +152,7 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
   if (strcmp(page, "clock") == 0) {
     inkRenderClockPage(c, epoch);
   } else if (strcmp(page, "timer") == 0) {
-    inkRenderTimerPage(c, state, remain);
+    inkRenderTimerPage(c, state, remain, 4);
   } else {
     fprintf(stderr, "unknown page: %s\n", page);
     return 2;

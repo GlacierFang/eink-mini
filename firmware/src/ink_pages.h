@@ -26,6 +26,6 @@ struct InkPageList {
 // 屏上只有 HH:MM —— 没有日期、没有页码、没有状态文字。
 void inkRenderClockPage(InkCanvas& c, uint32_t epoch);
 
-// 本地计时器页：状态词 + MM:SS。没有预设分钟数，没有进度条。
+// 本地计时器页：状态词 + MM:SS + 顶部当前预设 + 底部预设条。没有进度条。
 void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
-                        uint32_t remainingSec);
+                        uint32_t remainingSec, int presetIndex);

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "ink_presets.h"
 
 // 本地计时器页。
 //
@@ -23,14 +24,14 @@ public:
   void init();
 
   // 按键操作
-  void toggle();       // 短按：开始 / 暂停 / 继续；DONE 时重开
-  void cyclePreset();  // 双击：下一个预设（RUNNING 时忽略，防误触）
-  void reset();        // 长按：回到 READY，清零
+  void toggle();       // B 短按：开始 / 暂停 / 继续；DONE 时重开
+  void cyclePreset();  // A 长按：下一个预设（任何状态都生效）
+  void reset();        // B 长按：回到 READY，清零
 
   InkTimerState state() const { return state_; }
   int presetIndex() const { return presetIndex_; }
   int presetMinutes() const;
-  int presetCount() const { return PRESET_COUNT; }
+  int presetCount() const { return INK_TIMER_PRESET_COUNT; }
 
   // 剩余秒数。DONE 返回 0。
   uint32_t remainingSec() const;
@@ -41,9 +42,6 @@ public:
   bool tick();
 
 private:
-  static const int PRESET_MINUTES[8];
-  static const int PRESET_COUNT;
-
   InkTimerState state_ = INK_TIMER_READY;
   int presetIndex_ = 4;          // 默认 15 分钟
   uint32_t remainMs_ = 0;        // 剩余毫秒（RUNNING 时是快照值）

@@ -185,7 +185,8 @@ static bool renderCurrentPage()
   // native 页：本地渲染。clock 和 timer 走不同的渲染器。
   if (strcmp(curId, "timer") == 0) {
     // 计时器用 millis()，不依赖校时 —— 没校过时照样能跑。
-    inkRenderTimerPage(g_canvas, timerStateLabel(), g_timer.remainingSec());
+    inkRenderTimerPage(g_canvas, timerStateLabel(), g_timer.remainingSec(),
+                       g_timer.presetIndex());
     return true;
   }
 
@@ -314,22 +315,38 @@ static void handleKeys()
   while (g_keys.poll(key, ev)) {
     Serial.printf("[key] %c event=%d\n", (key == INK_KEY_A) ? 'A' : 'B', (int)ev);
     g_lastKeyEventMs = millis();   // 用户正在操作：别在这时候发网络请求
+    // 当前是不是计时器页 —— 决定 A 长按是「换预设」还是「全刷」。
+    bool onTimer = false;
+    if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
+      onTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
+    }
     if (key == INK_KEY_A) {
       switch (ev) {
-        case INK_EV_SHORT:  gotoPage(g_pageIndex + 1); break;   // 短按：下一页
-        case INK_EV_DOUBLE: gotoPage(g_pageIndex - 1); break;   // 双击：上一页
+        case INK_EV_SHORT:
+          gotoPage(g_pageIndex + 1);        // 短按：下一页
+          break;
         case INK_EV_LONG:
-          g_display.forceFullRefresh();                          // 长按：立即全刷
-          Serial.println("[key] A 长按：全刷");
+          if (onTimer) {
+            // 计时器页：A 长按换下一个预设。
+            //
+            // 换预设原来走 B 双击，但双击和 B 短按（启停）结构上抢同一个
+            // 动作：双击必须等第二次松开才判定，那时短按已经把计时器启动
+            // 了。双击已废除，预设改挂到 A 键长按上。
+            g_timer.cyclePreset();
+            g_lastTimerSec = 0;
+            g_dirtyPage = true;
+            g_stateReportDirty = true;
+            g_stateReportAtMs = millis() + 2000;
+            Serial.printf("[timer] A 长按 -> 预设 %d 分钟\n", g_timer.presetMinutes());
+          } else {
+            g_display.forceFullRefresh();  // 其它页：长按立即全刷
+            Serial.println("[key] A 长按：全刷");
+          }
           break;
         default: break;
       }
     } else if (key == INK_KEY_B) {
       // 计时器页上 B 键是计时器专用；其它页是原来的行为。
-      bool onTimer = false;
-      if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
-        onTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
-      }
       if (onTimer) {
         switch (ev) {
           case INK_EV_SHORT:
@@ -341,16 +358,8 @@ static void handleKeys()
             Serial.printf("[timer] 短按 -> state=%d 剩余 %lus\n",
                           (int)g_timer.state(), (unsigned long)g_timer.remainingSec());
             break;
-          case INK_EV_DOUBLE:
-            g_timer.cyclePreset();     // 换预设（RUNNING 时忽略）
-            g_lastTimerSec = 0;        // 立刻重画
-            g_dirtyPage = true;
-            g_stateReportDirty = true;
-            g_stateReportAtMs = millis() + 2000;
-            Serial.printf("[timer] 双击 -> 预设 %d 分钟\n", g_timer.presetMinutes());
-            break;
           case INK_EV_LONG:
-            g_timer.reset();            // 重置
+            g_timer.reset();            // B 长按：重置
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
             g_stateReportDirty = true;
@@ -365,9 +374,6 @@ static void handleKeys()
             if (knockMeritOnMeritPage()) break;                  // 木鱼页：一次按键播三帧
             g_forceRefresh = true;                                // 短按：强制重拉当前页
             g_dirtyPage = true;                                  // 立刻重绘
-            break;
-          case INK_EV_DOUBLE:
-            gotoPage(0);                                           // 双击：回第一页
             break;
           case INK_EV_LONG:
             Serial.println("[key] B 长按：进入配置模式");

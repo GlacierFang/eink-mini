@@ -5,6 +5,8 @@
 #include "ink_pages.h"
 #include "ink_canvas.h"
 #include "ink_font_big.h"
+#include "ink_font.h"
+#include "ink_presets.h"
 #include <string.h>
 #include <time.h>
 
@@ -117,20 +119,47 @@ void inkRenderClockPage(InkCanvas& c, uint32_t epoch)
 }
 
 
+// 底部：预设条。
+//
+// 换预设走 A 键长按 —— 长按这种手势没有视觉提示就没人猜得到，
+// 所以底部常驻一行预设，当前那个反白标出来。
+//
+// 字模只有 5x7 ASCII 和 13px 大写字母两套，后者没有数字，
+// 所以预设条只能用 5x7。
+static void drawPresetStrip(InkCanvas& c, int currentIndex)
+{
+  const int y = INK_H - 11;               // 5x7 字模 7px 高，下面留 4px
+  int x = 6;
+  for (int i = 0; i < INK_TIMER_PRESET_COUNT; i++) {
+    char lbl[4];
+    snprintf(lbl, sizeof(lbl), "%d", INK_TIMER_PRESETS[i]);
+    int w = (int)strlen(lbl) * (INK_FONT_W + 1) - 1;   // 5px 字宽 + 1px 字距
+    if (i == currentIndex) {
+      c.drawRect(x - 2, y - 2, w + 4, INK_FONT_H + 4, true);   // 黑底
+      c.drawText(x, y, lbl, false);                            // 白字
+    } else {
+      c.drawText(x, y, lbl, true);
+    }
+    x += w + 6;
+  }
+}
+
 // 本地计时器页。
 //
 // 版式：
 //   顶部左：状态（READY / RUN / PAUSE / DONE），专用小号字模
+//   顶部右：当前预设（5x7 放大一倍）
 //   中部：翻页钟大字 MM:SS
+//   底部：预设条，当前项反白
 //
 // 数字用字库不用七段：倒计时也是翻页钟的用法，和时钟页保持一套形态。
 //
 // 状态词用 ASCII —— 设备原生字库只有 5x7 ASCII，没有中文字模。
 //
-// 预设分钟数和进度条都不画：数字已经把剩余量说精确了，
-// 进度条只是把同一件事画粗一遍，白占一大块面积。
+// 不画进度条：数字已经把剩余量说精确了，进度条只是把同一件事画粗一遍，
+// 白占一大块面积。
 void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
-                        uint32_t remainingSec)
+                        uint32_t remainingSec, int presetIndex)
 {
   c.clear();
 
@@ -141,6 +170,23 @@ void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
   // 只有 24x7 px，在 296x128 的屏上几乎看不见。
   c.drawStateText(6, 3, stateLabel, true);
 
+  // ---- 顶部右：当前预设 ----
+  //
+  // 底部预设条用 5x7 原号太小，看不清当前是哪个；这里放大一倍。
+  // 13px 字模只有大写字母，数字用不了，只能用 5x7 放大。
+  {
+    int pm = 0;
+    if (presetIndex >= 0 && presetIndex < INK_TIMER_PRESET_COUNT) {
+      pm = INK_TIMER_PRESETS[presetIndex];
+    }
+    char pbuf[12];
+    snprintf(pbuf, sizeof(pbuf), "%dMIN", pm);
+    int pw = (int)strlen(pbuf) * (INK_FONT_W + 1) * 2;   // scale=2
+    int px = INK_W - pw - 6;
+    if (px < 100) px = 100;                              // 别压到状态词
+    c.drawText(px, 4, pbuf, true, 2);
+  }
+
   // ---- 中部：翻页钟大字 MM:SS ----
   uint32_t mm = remainingSec / 60UL;
   uint32_t ss = remainingSec % 60UL;
@@ -148,6 +194,9 @@ void inkRenderTimerPage(InkCanvas& c, const char* stateLabel,
   twoDigits(digits, mm);
   twoDigits(digits + 2, ss);
   drawFlipTime(c, 20, digits);
+
+  // ---- 底部：预设条 ----
+  drawPresetStrip(c, presetIndex);
 }
 
 

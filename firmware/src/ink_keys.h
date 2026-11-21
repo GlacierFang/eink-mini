@@ -6,15 +6,23 @@ enum InkKey : uint8_t { INK_KEY_A = 0, INK_KEY_B = 1, INK_KEY_COUNT = 2 };
 enum InkKeyEvent : uint8_t {
   INK_EV_NONE = 0,
   INK_EV_SHORT,
-  INK_EV_DOUBLE,
   INK_EV_LONG
 };
 
-// 两键手势引擎。
+// 两键手势引擎（2026-11-21 改版）。
 //
-//   长按 >= 600ms 优先；一旦判定长按，就不再产生短按/双击。
-//   短按后等 250ms 确认窗：窗内再来一次 -> 双击；窗到期 -> 单击。
-//   消抖 25ms。
+// 原来有 SHORT / DOUBLE / LONG 三种。DOUBLE 和 SHORT 结构上就抢同一个
+// 动作：双击必须等第二次松开才能判定，而那时第一次轻按的副作用已经
+// 发生了。于是「短按=开始倒计时、双击=换预设」永远不可能同时成立 ——
+// 第一下轻点已经把计时器启动，双击到达时它在跑，而「运行中忽略换预设」
+// 这条规则又把双击吃掉。整条路径走不通，不是判定写得不准的问题。
+//
+// 现在只有 SHORT / LONG 两种，语义互斥、与顺序无关：
+//   短按：松开即刻发（按住时长 < 600ms）
+//   长按：按住满 600ms 当场发，之后松开不再补发短按
+// 消抖 25ms。
+//
+// 选预设改走 A 键长按（见 main.cpp），不再占用双击。
 class InkKeys {
 public:
   void begin();
@@ -29,8 +37,7 @@ private:
     uint32_t pressedAt = 0;
     bool     down = false;
     bool     longFired = false;
-    uint32_t pendingClickAt = 0;  // 单击待确认到期时间，0 = 无
-    uint8_t  pendingEvent = 0;    // 已就绪待取走的事件
+    uint8_t  pendingEvent = 0;
     uint8_t  pendingKey = 0;
   };
   State st_[INK_KEY_COUNT];
