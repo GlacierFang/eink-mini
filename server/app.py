@@ -10,9 +10,13 @@
   GET  /api/config             读配置
   POST /api/config             改配置
   GET  /api/device             设备在线状态
-  GET  /api/merit              当前累计功德
-  POST /api/merit/tap          敲一下（count +1）
-  GET  /images/<n>.png         木鱼素材三帧
+  GET  /api/merit              当前累计功德（设备上报的镜像）
+
+设备侧：
+  GET  /api/device/state       设备上报状态（含木鱼页的功德计数）
+
+**木鱼页的计数只以设备为准**：设备本地记（固件 NVS），上报绝对值，
+服务端只存镜像。服务端不猜「用户敲了没」——
 """
 
 import hashlib
@@ -62,11 +66,12 @@ PAGES = [
     },
     {
         "id": "merit",
-        "type": "bitmap",
+        "type": "native",
         "title": "赛博木鱼",
         "label": "MERIT",
-        "desc": "敲一下木鱼，功德 +1。只增不减，永不清零。设备端在木鱼页按 B 键，"
-                "网页端点木鱼，两边共用同一个计数。",
+        "desc": "敲一下木鱼，功德 +1。整页在设备本地渲染 —— 三帧位图和数字字模"
+                "都烘焙在固件里，计数存在设备的 NVS 里，断网也能敲。"
+                "B 短按敲一下，B 长按清零。服务器只是只读镜像。",
         "fields": [],
     },
     {
@@ -137,9 +142,6 @@ def render_page(page_id):
     图标列表每项是 (ox, oy, 局部清晰层, 局部灰阶层)，
     量化时叠进页面（见 renderer.page_mask）。
     """
-    if page_id == merit.MERIT_PAGE_ID:
-        # 功德每敲一次就变，不能缓存
-        return pages.render_merit(merit.count(), merit.FRAME_IDLE)
     key = _cache_key(page_id)
     now = datetime.now().timestamp()
     with _cache_lock:
@@ -281,10 +283,10 @@ def _page_version(page_id):
         seed = "calendar|%s" % datetime.now().strftime("%Y%m%d")
     elif page_id == "almanac":
         seed = "almanac|%s" % datetime.now().strftime("%Y%m%d")
-    elif page_id == merit.MERIT_PAGE_ID:
-        seed = "merit|%d" % merit.count()
     else:
-        seed = "clock|local"
+        # clock / timer / merit 都是设备本地渲染的页 ——
+        # 内容不由服务端决定，版本号就是常量。
+        seed = "%s|local" % page_id
     return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
 
 
@@ -319,7 +321,6 @@ def manifest():
             "pages": pages_out,
         }
     )
-    merit.note_manifest(_device_key())
     device_state.record(
         "manifest.json",
         ip=request.remote_addr,
@@ -333,15 +334,6 @@ def _device_key():
     return "%s|%s" % (request.remote_addr or "-", request.headers.get("User-Agent", ""))
 
 
-def _merit_frame_bytes(crisp, icon_specs, tone, frame):
-    """木鱼一帧的 1bpp 位图。
-
-    挥过帧的残影是浅色虚线，硬阈值 165 会吃掉它 —— 这帧放宽到 190。
-    """
-    thr = 190 if frame == merit.FRAME_SWING else renderer.DEFAULT_THRESHOLD
-    return renderer.frame_from_page(crisp, icon_specs, threshold=thr, tone=tone)
-
-
 @app.route("/api/page/<page_id>.bin")
 def page_bin(page_id):
     entry = _page_entry(page_id)
@@ -349,41 +341,9 @@ def page_bin(page_id):
         return Response(status=404)
     if entry["type"] != "bitmap":
         return Response(status=400)
-    _frame = merit.FRAME_IDLE
-    # ?f=N：固件显式要哪一帧（木鱼敲击的击打/挥过/静息）。
-    # 带这个参数时不走请求序列启发式 —— 一次按键三帧请求只算一下。
-    _explicit = request.args.get("f")
-    # ?f=1,2,0：一次要多帧（木鱼敲击的三帧一次取回，少两次公网往返）
-    _frames = None
-    if _explicit is not None:
-        try:
-            _frames = [int(x) for x in _explicit.split(",") if x.strip() != ""]
-        except ValueError:
-            _frames = None
     try:
-        if page_id == merit.MERIT_PAGE_ID:
-            if _frames and len(_frames) > 1:
-                # 多帧一次取回：同一个计数渲染全部帧，拼在一起返回。
-                _count = merit.note_page_explicit_batch(
-                    _device_key(), page_id, _frames)
-                chunks = []
-                for _f in _frames:
-                    crisp, icon_specs, tone = pages.render_merit(_count, _f)
-                    chunks.append(_merit_frame_bytes(crisp, icon_specs, tone, _f))
-                data = b"".join(chunks)
-            elif _frames:
-                _count, _frame = merit.note_page_explicit(
-                    _device_key(), page_id, _frames[0])
-                crisp, icon_specs, tone = pages.render_merit(_count, _frame)
-                data = _merit_frame_bytes(crisp, icon_specs, tone, _frame)
-            else:
-                _is_tap, _count, _frame = merit.note_page(_device_key(), page_id)
-                crisp, icon_specs, tone = pages.render_merit(_count, _frame)
-                data = _merit_frame_bytes(crisp, icon_specs, tone, _frame)
-        else:
-            merit.note_page(_device_key(), page_id)
-            crisp, icon_specs, tone = render_page(page_id)
-            data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
+        crisp, icon_specs, tone = render_page(page_id)
+        data = renderer.frame_from_page(crisp, icon_specs, tone=tone)
     except KeyError:
         return Response(status=404)
     resp = Response(data, mimetype="application/octet-stream")
@@ -477,29 +437,8 @@ def set_cfg():
 
 @app.route("/api/merit")
 def merit_state():
-    """当前累计功德。"""
+    """当前累计功德 —— 设备报上来的镜像。"""
     return jsonify(merit.stats())
-
-
-@app.route("/api/merit/tap", methods=["POST"])
-def merit_tap():
-    """网页端敲一下。只加 1，不接受任意值。"""
-    result = merit.tap(source="web", ip=request.remote_addr)
-    if result is None:
-        return jsonify({"ok": False, "error": "敲太快了，稍等一下"}), 429
-    result["ok"] = True
-    return jsonify(result)
-
-
-@app.route("/images/<name>.png")
-def merit_image(name):
-    """木鱼三帧素材。"""
-    if name not in ("1", "2", "3"):
-        return Response(status=404)
-    path = merit.frame_path(int(name) - 1)
-    if not path.exists():
-        return Response(status=404)
-    return Response(path.read_bytes(), mimetype="image/png")
 
 
 @app.route("/api/device/state")
@@ -526,6 +465,15 @@ def device_state_report():
         ip=request.remote_addr,
         user_agent=request.headers.get("User-Agent"),
     )
+    # 功德：设备本地记的数，服务器只存镜像 —— 敲没敲由设备说了算。
+    merit_count = request.args.get("merit")
+    merit_strike = request.args.get("merit_strike")
+    if merit_count is not None:
+        try:
+            merit.report(int(merit_count),
+                         int(merit_strike) if merit_strike is not None else None)
+        except ValueError:
+            pass
     return jsonify({"ok": True, "report": state.get("report")})
 
 
@@ -539,6 +487,7 @@ def api_device():
             "heartbeat": device_state.HEARTBEAT_PERIOD_SEC,
             "state": state,
             "timer": device_state.timer_state(state),
+            "merit": merit.stats(),
             "content_age": device_state.content_age_seconds(state),
             "pages": [p["id"] for p in PAGES],
         }

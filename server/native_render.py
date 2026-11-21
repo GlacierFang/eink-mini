@@ -40,17 +40,22 @@ LOCK_PATH = DATA_DIR / "native_render.lock"
 W, H, ROW = 296, 128, 37
 FRAME_BYTES = ROW * H
 
+import merit
+
 SRC_FILES = [
     FW / "src" / "ink_canvas.cpp",
     FW / "src" / "ink_pages.cpp",
     FW / "src" / "ink_font_big.cpp",
     FW / "src" / "ink_font_state.cpp",
+    FW / "src" / "ink_merit.cpp",
+    FW / "src" / "ink_merit_assets.cpp",
     FW / "tools" / "host_render.cpp",
 ]
 
 
 CLOCK_TTL = 10        # 时钟页有秒，10 秒刷一次
 TIMER_TTL = 30        # 计时器预览跟着设备上报的状态走，30 秒刷一次
+MERIT_TTL = 30        # 木鱼页预览跟着设备上报的计数走，30 秒刷一次
 TIMER_STATES = ("READY", "RUN", "PAUSE", "DONE")
 TIMER_REMAIN = {"READY": 900, "RUN": 754, "PAUSE": 754, "DONE": 0}
 
@@ -149,6 +154,16 @@ def _timer_kwargs(state="READY", remaining=900):
     }
 
 
+def _merit_kwargs():
+    """木鱼页预览：画设备上那一页（烘焙帧 + 数字）。
+
+    数字用设备上报的数（服务器只有镜像，可能比设备慢一拍）。
+    """
+    return {
+        "count": merit.count(),
+    }
+
+
 def _reported_timer():
     """设备上报的计时器状态；没上报过就退回代表性状态。"""
     try:
@@ -217,12 +232,15 @@ def get_meta(page):
 
 def _refresh(page):
     build()
+    state = None
     if page == "clock":
         img = frame_to_image(_run_frame("clock", **_clock_kwargs()))
+    elif page == "merit":
+        img = frame_to_image(_run_frame("merit", **_merit_kwargs()))
     else:
         state, remain = _reported_timer()
         img = frame_to_image(_run_frame("timer", **_timer_kwargs(state, remain)))
-    _write_cache(page, img, state=state if page != "clock" else None)
+    _write_cache(page, img, state=state)
 
 
 def _stale(page, ttl):
@@ -232,7 +250,7 @@ def _stale(page, ttl):
 
 def _loop():
     while True:
-        for page, ttl in (("clock", CLOCK_TTL), ("timer", TIMER_TTL)):
+        for page, ttl in (("clock", CLOCK_TTL), ("timer", TIMER_TTL), ("merit", MERIT_TTL)):
             try:
                 if _stale(page, ttl):
                     _refresh(page)

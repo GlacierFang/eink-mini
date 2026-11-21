@@ -58,33 +58,57 @@ bool InkClient::fetchPageFrame(const char* id, uint8_t* dst, size_t dstLen)
   return fetchText(path, dst, dstLen) == dstLen;
 }
 
-bool InkClient::fetchPageFrames(const char* id, const int* frames, int frameCount,
-                                uint8_t* dst, size_t frameLen)
-{
-  if (frameCount <= 0 || frameCount > 8) return false;
-  char path[96];
-  int n = snprintf(path, sizeof(path), "/api/page/%s.bin?f=", id);
-  for (int i = 0; i < frameCount; i++) {
-    n += snprintf(path + n, sizeof(path) - n, "%s%d", (i ? "," : ""), frames[i]);
-  }
-  size_t total = frameLen * (size_t)frameCount;
-  return fetchText(path, dst, total) == total;
-}
-
 bool InkClient::reportDeviceState(const char* pageId, const char* timerState,
-                                 uint32_t timerRemain, uint32_t timerPreset)
+                                 uint32_t timerRemain, uint32_t timerPreset,
+                                 bool hasMerit, uint32_t meritCount, uint32_t meritStrike)
 {
-  char path[192];
-  snprintf(path, sizeof(path),
-           "/api/device/state?page=%s&state=%s&remain=%lu&preset=%lu",
-           (pageId && pageId[0]) ? pageId : "-",
-           (timerState && timerState[0]) ? timerState : "READY",
-           (unsigned long)timerRemain,
-           (unsigned long)timerPreset);
+  char path[224];
+  int n = snprintf(path, sizeof(path),
+                   "/api/device/state?page=%s&state=%s&remain=%lu&preset=%lu",
+                   (pageId && pageId[0]) ? pageId : "-",
+                   (timerState && timerState[0]) ? timerState : "READY",
+                   (unsigned long)timerRemain,
+                   (unsigned long)timerPreset);
+  // 功德：设备本地记着的数，报绝对值。服务器只存不算。
+  if (hasMerit) {
+    n += snprintf(path + n, sizeof(path) - n, "&merit=%lu&merit_strike=%lu",
+                  (unsigned long)meritCount, (unsigned long)meritStrike);
+  }
   // 响应体不看，只要请求到了就算上报成功。
   // 超时给 3 秒：这是个小请求，而且它阻塞的是用户的按键响应。
   uint8_t sink[8];
   return fetchText(path, sink, sizeof(sink), 3000) > 0;
+}
+
+bool InkClient::fetchMeritCount(uint32_t* count, uint32_t* strike)
+{
+  if (!g_net || !g_net.connected()) return false;
+  uint8_t* buf = (uint8_t*)malloc(256);
+  if (!buf) return false;
+  size_t got = fetchText("/api/merit", buf, 255, 3000);
+  bool ok = false;
+  if (got > 0) {
+    buf[got < 255 ? got : 254] = 0;
+    static JDoc doc;
+    if (doc.parse((const char*)buf, got)) {
+      int root = doc.root();
+      int cn = doc.findKey(root, "count");
+      int sn = doc.findKey(root, "strike");
+      if (cn >= 0 && doc.node(cn).type == J_NUM) {
+        double v = doc.node(cn).num;
+        if (v >= 0.0 && v < 4294967296.0) {
+          if (count) *count = (uint32_t)v;
+          ok = true;
+        }
+      }
+      if (sn >= 0 && doc.node(sn).type == J_NUM) {
+        double v = doc.node(sn).num;
+        if (v >= 0.0 && v < 4294967296.0 && strike) *strike = (uint32_t)v;
+      }
+    }
+  }
+  free(buf);
+  return ok;
 }
 
 bool InkClient::fetchManifest(InkPageList& out)

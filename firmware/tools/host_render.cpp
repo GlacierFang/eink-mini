@@ -14,9 +14,9 @@
 //   host_render sheet <输出目录>
 //       出 6 张图（PGM）：时钟（已校时/没校时）、计时器四态
 //
-//   host_render frame <clock|timer> <输出文件> [键=值 ...]
+//   host_render frame <clock|timer|merit> <输出文件> [键=值 ...]
 //       出设备帧（4736 字节，1=黑，MSB first，每行 37 字节）。
-//       可用键：epoch, state, remaining
+//       可用键：epoch, state, remaining, count
 //               (只剩 epoch / state / remaining)
 //
 // 注意：自检画面在 main.cpp 里（依赖 g_display / g_net 全局状态），
@@ -24,6 +24,7 @@
 
 #include "ink_canvas.h"
 #include "ink_pages.h"
+#include "ink_merit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,6 +139,7 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
   uint32_t epoch    = getU32("epoch", 0);
   const char* state = getStr("state", "READY");
   uint32_t remain   = getU32("remaining", 900);
+  uint32_t count    = getU32("count", 0);
 
   // 未传的键从命令行尾部收
   for (int i = 0; i < argc; i++) {
@@ -145,6 +147,7 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
     if (strncmp(a, "epoch=", 6) == 0)          epoch = getU32(a, epoch);
     else if (strncmp(a, "state=", 6) == 0)     state = getStr(a, state);
     else if (strncmp(a, "remaining=", 10) == 0) remain = getU32(a, remain);
+    else if (strncmp(a, "count=", 6) == 0)     count = getU32(a, count);
 
   }
 
@@ -153,6 +156,8 @@ static int renderFrame(const char* page, const char* out, int argc, char** argv)
     inkRenderClockPage(c, epoch);
   } else if (strcmp(page, "timer") == 0) {
     inkRenderTimerPage(c, state, remain, 4);
+  } else if (strcmp(page, "merit") == 0) {
+    inkRenderMeritPage(c, count, INK_MERIT_FRAME_IDLE);
   } else {
     fprintf(stderr, "unknown page: %s\n", page);
     return 2;

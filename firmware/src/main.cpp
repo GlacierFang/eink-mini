@@ -15,6 +15,8 @@
 #include "ink_client.h"
 #include "ink_pages.h"
 #include "ink_timer.h"
+#include "ink_merit.h"
+#include "ink_merit_store.h"
 
 void inkClientBindNet(InkNet* n);
 
@@ -65,6 +67,8 @@ static bool     g_dirtyPage = true;
 // 计时器页的秒数单独记。跟时钟页共用一个变量时两边语义不同
 // （一个是 epoch，一个是剩余秒），切页容易漏画。
 static uint32_t g_lastTimerSec = 0;
+// 木鱼页的功德数单独记 —— 数字变了才重画。
+static uint32_t g_lastMeritCount = 0;
 
 // 当前时间。没校时返回 0，渲染器会画成 --:--。
 //
@@ -146,6 +150,19 @@ static bool renderCurrentPage()
     curType = g_pages.items[g_pageIndex].type;
   }
 
+  // 木鱼页：设备本地渲染。
+  //
+  // 三帧位图和数字字模都烘焙在固件里（ink_merit_assets.cpp），
+  // 计数存在 NVS 里 —— 这一页不拉位图、不问服务器，断网也能敲。
+  //
+  // 放在 bitmap 判断之前：清单里 merit 的类型是 native，本来也走不到
+  // 那个分支；但早退更保险（老清单还标着 bitmap 时也不会去拉）。
+  if (strcmp(curId, "merit") == 0) {
+    inkRenderMeritPage(g_canvas, inkMeritCount(), INK_MERIT_FRAME_IDLE);
+    g_lastMeritCount = inkMeritCount();
+    return true;
+  }
+
   if (strcmp(curType, "bitmap") == 0) {
     // bitmap 页：版本变了才拉新帧，拉不到才回退缓存。
     //
@@ -225,6 +242,22 @@ static void refreshManifestIfDue()
   int beforeCount = g_pages.count;
 
   if (g_client.fetchManifest(g_pages)) {
+    // 第一次开机：把服务器上已有的功德接过来。
+    //
+    // 老固件时代是服务器在数（网页也能敲），新固件是设备在数。
+    // 第一次开机时服务器上还有那份历史 —— 接过来，否则第一次上报就把它
+    // 盖成 0，等于把攒的功德清空了。
+    //
+    // 清单能拉到 = 服务器够得着，这时接数才靠谱。
+    // 只接一次（inkMeritSeed 内部有 seeded 标记），之后设备自己是权威。
+    if (!inkMeritSeeded()) {
+      uint32_t mc = 0, ms = 0;
+      if (g_client.fetchMeritCount(&mc, &ms)) {
+        inkMeritSeed(mc, ms);
+        Serial.printf("[merit] 接过服务器的计数 count=%lu strike=%lu\n",
+                      (unsigned long)inkMeritCount(), (unsigned long)inkMeritStrike());
+      }
+    }
     if (g_pageIndex >= g_pages.count) g_pageIndex = 0;
     char afterId[40];
     afterId[0] = 0;
@@ -266,32 +299,30 @@ static void reportDeviceStateIfDue(bool force)
   if (g_pages.count > 0 && g_pageIndex < g_pages.count) pageId = g_pages.items[g_pageIndex].id;
   if (!g_client.reportDeviceState(pageId, timerStateLabel(),
                                   g_timer.remainingSec(),
-                                  (uint32_t)g_timer.presetMinutes())) {
+                                  (uint32_t)g_timer.presetMinutes(),
+                                  inkMeritSeeded(), inkMeritCount(), inkMeritStrike())) {
     Serial.println("[state] 上报失败");
   }
 }
 
 // 木鱼敲击的帧序：击打 -> 挥过 -> 静息。
-// 帧号与服务端 merit.FRAME_* 一致：0=静息 1=击打 2=挥过。
+// 帧号与 ink_merit.h 的 InkMeritFrame 一致：0=静息 1=击打 2=挥过。
 //
-// 三帧一次取回（服务端拼成一段返回），不是分三次请求 ——
-// 设备走公网链路（frp 隧道到 ruohan.site），一次往返 300ms 起，
-// 分三次就是 1 秒多的纯等待。
+// 三帧烘焙在固件里（ink_merit_assets.cpp）—— 不取、不等、不联网。
+// 敲一下 = 一次 NVS 写入 + 三帧局刷，全程不碰服务器。
 //
-// 连播不在按键处理里同步做完：那样 loop 有近 3 秒不跑，按键不被
+// 连播不在按键处理里同步做完：那样 loop 有 1 秒多不跑，按键不被
 // 采样 —— 敲第二下直接被吞。现在按键只置标志，loop 里一帧一帧推进。
 static const int MERIT_FRAME_SEQ[3] = {1, 2, 0};
 
 enum MeritAnimState : uint8_t {
   MERIT_ANIM_IDLE = 0,
-  MERIT_ANIM_FETCH,   // 去服务器取三帧
   MERIT_ANIM_PLAY     // 一帧一帧上屏
 };
 
 static uint8_t  g_meritAnim = MERIT_ANIM_IDLE;
 static uint8_t  g_meritAnimIdx = 0;
 static bool     g_meritQueued = false;   // 动画期间又敲了一下 -> 排队再来一次
-static uint8_t* g_meritBuf = nullptr;    // 三帧的缓存（3 × INK_FRAME_BYTES）
 
 // 当前是不是木鱼页
 static bool onMeritPage()
@@ -302,11 +333,9 @@ static bool onMeritPage()
 
 // 木鱼连播：一步一帧。
 //
-// 整段动画原来在按键处理里同步做完（3 次往返 + 3 次局刷 + 2 次间隔
-// ≈ 2.8 秒），这期间 loop 不跑、按键不采样。
-// 现在按键只置标志，这里分步推进：
-//   1) 一次往返把三帧全取回来
-//   2) 一帧一帧上屏，面板局刷 420ms/帧是硬件下限，三帧至少 1.26 秒
+// 三帧在固件里（ink_merit_assets.cpp），一帧一帧上屏。
+// 面板局刷 420ms/帧是硬件下限，三帧至少 1.26 秒 —— 这段时间 loop
+// 不跑，所以按键处理只置标志。
 static void meritAnimStep()
 {
   if (g_meritAnim == MERIT_ANIM_IDLE) return;
@@ -318,37 +347,16 @@ static void meritAnimStep()
     return;
   }
 
-  if (g_meritAnim == MERIT_ANIM_FETCH) {
-    // 三帧 14208 字节。懒分配 —— 不用木鱼页就不占这块内存。
-    if (!g_meritBuf) {
-      g_meritBuf = (uint8_t*)malloc(3 * INK_FRAME_BYTES);
-      if (!g_meritBuf) {
-        Serial.println("[merit] 内存不足");
-        g_meritAnim = MERIT_ANIM_IDLE;
-        return;
-      }
-    }
-    if (!g_client.fetchPageFrames("merit", MERIT_FRAME_SEQ, 3, g_meritBuf, INK_FRAME_BYTES)) {
-      Serial.println("[merit] 取帧失败");
-      g_meritAnim = MERIT_ANIM_IDLE;
-      return;
-    }
+  inkRenderMeritPage(g_canvas, inkMeritCount(), MERIT_FRAME_SEQ[g_meritAnimIdx]);
+  g_display.push(g_canvas, false);
+  g_meritAnimIdx++;
+  if (g_meritAnimIdx >= 3) {
     g_meritAnimIdx = 0;
-    g_meritAnim = MERIT_ANIM_PLAY;
-  }
-
-  if (g_meritAnim == MERIT_ANIM_PLAY) {
-    const uint8_t* f = g_meritBuf + (size_t)g_meritAnimIdx * INK_FRAME_BYTES;
-    g_canvas.loadServerFrame(f, INK_FRAME_BYTES);
-    g_display.push(g_canvas, false);
-    g_meritAnimIdx++;
-    if (g_meritAnimIdx >= 3) {
+    // 动画期间又敲了一下：接着再播一轮
+    if (g_meritQueued) {
+      g_meritQueued = false;
+    } else {
       g_meritAnim = MERIT_ANIM_IDLE;
-      // 动画期间又敲了一下：接着再播一轮
-      if (g_meritQueued) {
-        g_meritQueued = false;
-        g_meritAnim = MERIT_ANIM_FETCH;
-      }
     }
   }
 }
@@ -418,27 +426,52 @@ static void handleKeys()
             if (onMeritPage()) {
               // 木鱼页：敲一下。
               //
+              // 计数在设备本地：+1、写 NVS。数字和三帧都在固件里 ——
+              // 断网也敲得了，不问服务器。
+              //
               // 只置标志，不在这里同步播完 —— 连播是 3 帧 × 局刷 420ms
               // ≈ 1.3 秒，同步做的话这段时间 loop 不跑、按键不采样。
               // 由 meritAnimStep() 在 loop 里一帧一帧推进。
+              inkMeritTap();
+              g_lastMeritCount = inkMeritCount();
               if (g_meritAnim == MERIT_ANIM_IDLE) {
-                g_meritAnim = MERIT_ANIM_FETCH;
+                g_meritAnim = MERIT_ANIM_PLAY;
+                g_meritAnimIdx = 0;
               } else {
                 g_meritQueued = true;   // 动画期间又敲了一下 -> 播完再来一轮
               }
+              // 把新计数报给服务器（延后 2 秒，不在按键处理里发请求）。
+              g_stateReportDirty = true;
+              g_stateReportAtMs = millis() + 2000;
             }
             // 其它页：B 短按不做任何事。位图内容按 manifest 里的版本
             // 自动更新，手动重拉是冗余的第二条路径。
             break;
           case INK_EV_LONG:
-            Serial.println("[key] B 长按：进入配置模式");
-            g_net.runConfigPortal();
-            g_net.begin();
-            g_lastManifestMs = 0;
-          // 配网完必须重新校时。原来只在 setup 里校过一次，
-          // 配完网 g_timeOk 还是 false，时钟页会一直停在 --:--。
-          g_timeOk = g_net.syncTime();
-          g_dirtyPage = true;
+            if (onMeritPage()) {
+              // 木鱼页：长按清零。
+              //
+              // 功德归零，累计敲击次数保留 —— 「敲了多少下」是历史，
+              // 「功德」是可以自己抹掉的。
+              inkMeritClear();
+              g_lastMeritCount = inkMeritCount();
+              g_meritAnim = MERIT_ANIM_IDLE;
+              g_meritQueued = false;
+              g_dirtyPage = true;
+              g_stateReportDirty = true;
+              g_stateReportAtMs = millis() + 2000;
+              Serial.println("[merit] 长按 -> 清零");
+            } else {
+              // 其它页：B 长按进配置模式（配网）。
+              Serial.println("[key] B 长按：进入配置模式");
+              g_net.runConfigPortal();
+              g_net.begin();
+              g_lastManifestMs = 0;
+              // 配网完必须重新校时。原来只在 setup 里校过一次，
+              // 配完网 g_timeOk 还是 false，时钟页会一直停在 --:--。
+              g_timeOk = g_net.syncTime();
+              g_dirtyPage = true;
+            }
             break;
           default: break;
         }
@@ -465,6 +498,8 @@ void setup()
   g_keys.begin();
   g_display.begin();
   g_timer.init();
+  // 功德计数存在 NVS 里：开机先读出来（掉电不丢）。
+  inkMeritLoad();
 
   g_net.begin();
   g_timeOk = g_net.syncTime();
@@ -504,10 +539,14 @@ void loop()
   // 这时也要显示时钟页，不能停在自检画面。
   bool isLocal = true;
   bool isTimer = false;
+  bool isMerit = false;
   if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
     const char* t = g_pages.items[g_pageIndex].type;
     isTimer = (strcmp(g_pages.items[g_pageIndex].id, "timer") == 0);
-    isLocal = (strcmp(t, "native") == 0 || strcmp(t, "timer") == 0);
+    isMerit = (strcmp(g_pages.items[g_pageIndex].id, "merit") == 0);
+    // merit 虽然也是 native，但它自己管重画节奏（数字变了才重画），
+    // 不跟时钟页共用「按分钟重画」那套。
+    isLocal = (strcmp(t, "native") == 0 || strcmp(t, "timer") == 0) && !isMerit;
   }
 
   bool doRender = false;
@@ -533,6 +572,15 @@ void loop()
       doFull = g_timerJustDone;
       g_timerJustDone = false;
       if (timerFinished) Serial.println("[timer] 计时结束");
+    }
+  } else if (isMerit) {
+    // 木鱼页：数字变了才重画（敲一下 +1，或长按清零）。
+    //
+    // 画面是设备本地拼的：烘焙帧 + 数字字模。服务器不参与这一页。
+    uint32_t mc = inkMeritCount();
+    if (mc != g_lastMeritCount) {
+      g_lastMeritCount = mc;
+      doRender = true;
     }
   } else if (isLocal) {
     // 时钟页按分钟重画，走局刷只脏数字区域。

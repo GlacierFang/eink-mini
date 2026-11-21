@@ -3,7 +3,7 @@
 #
 # 用法：
 #   tools/render_host.sh [输出目录]              出 6 张图（PGM + PNG）
-#   tools/render_host.sh frame <clock|timer> <输出.bin> [k=v ...]
+#   tools/render_host.sh frame <clock|timer|merit> <输出.bin> [k=v ...]
 #
 # 装好 g++ 和 python3-pil 就能跑。不需要 PlatformIO，不需要硬件。
 set -e
@@ -18,6 +18,7 @@ build() {
   g++ -std=c++11 -O2 -I src \
       src/ink_canvas.cpp src/ink_pages.cpp src/ink_font_big.cpp \
       src/ink_font_state.cpp \
+      src/ink_merit.cpp src/ink_merit_assets.cpp \
       tools/host_render.cpp \
       -o "$BIN"
 }

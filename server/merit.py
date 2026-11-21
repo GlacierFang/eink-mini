@@ -1,12 +1,17 @@
-"""赛博木鱼：累计功德。
+"""赛博木鱼：设备本地计数，服务器只做**只读镜像**。
 
-一个只增不减的计数器 —— 不按天清零，不设上限。
-设备端在木鱼页按 B 键 = 敲一下；网页端点木鱼 = 敲一下。两条路写同一个计数。
+设备端在木鱼页按 B 键 = 敲一下。**敲没敲只有设备知道** —— 计数存在设备
+的 NVS 里，设备把当前计数报上来，服务器只存下来给控制台显示。
 
-状态落在 data/merit.json：服务端是 gunicorn 2 worker，内存态跨 worker 不可见，
-所以状态落盘，写入走 flock 锁 + 原子替换。
+服务器不猜、不推断、不合并。以前那套「靠请求间隔猜用户敲了没」的启发式
+已经删掉 —— 那正是「一次敲击被算成两次」的根源（显式路径和启发式路径同时
+命中同一次敲击）。
 
-素材在 ../images/：1.png 抬槌 / 2.png 击打 / 3.png 挥过。
+所以这里没有「敲一下」的函数：服务器唯一的写入路径是 report()，
+调用方是设备的上报。
+
+**帧素材不归这里管**：三帧位图离线烘焙进固件（firmware/tools/
+gen_merit_assets.py），生成脚本自己读 images/ 下的原始 PNG。
 """
 
 import fcntl
@@ -14,52 +19,12 @@ import json
 import os
 import time
 from contextlib import contextmanager
-from functools import lru_cache
 from pathlib import Path
-
-from PIL import Image
 
 SERVER_DIR = Path(__file__).resolve().parent
 DATA_DIR = SERVER_DIR / "data"
 STATE_FILE = DATA_DIR / "merit.json"
 LOCK_FILE = DATA_DIR / "merit.lock"
-
-IMAGE_DIR = SERVER_DIR.parent / "images"
-
-FRAME_IDLE = 0
-FRAME_STRIKE = 1
-FRAME_SWING = 2
-FRAME_FILES = {FRAME_IDLE: "1.png", FRAME_STRIKE: "2.png", FRAME_SWING: "3.png"}
-
-MERIT_PAGE_ID = "merit"
-
-# 判定「用户主动敲」而不是「自动轮询」：
-#
-# 这是**旧固件**的判定方式：老固件敲木鱼就是「再拉一次木鱼位图」，
-# 服务端靠「两次紧挨着的木鱼位图请求」猜用户敲没敲。
-#
-# 固件每 30 秒拉一次 manifest，拉完立刻拉当前页位图 ——
-# 所以稳态下请求序列是 manifest -> 位图，一对一对的。
-# 用户敲一下会多出一次位图请求，前面没有 manifest 兜底 ——
-# 这一对位图请求挨得很近。
-#
-# 只认「上一次也是木鱼页位图」：从别的页切进木鱼页也会多一次请求，
-# 但那次的上一请求是别的页，排掉。
-#
-# 29 秒的上限：manifest 拉失败时固件会自己补一次位图（周期 30 秒），
-# 那次也是没有 manifest 兜底，但离上一次拉取超过 30 秒，不算敲。
-# 卡在 29 秒是为了把「误判窗口」压到 1 秒：用户在前 29 秒内敲都算数。
-#
-# **新版固件不走这条路**：它的敲击带 ?f= 显式上报（见 note_page_explicit
-# / note_page_explicit_batch）。一旦某台设备发过显式请求，就在它自己的
-# 状态里记下 explicit_client —— 那条启发式对它永久关闭。
-# 不关的话会多算：显式敲击计 +1，紧随其后的普通刷新（计数变了 ->
-# 页面版本变了 -> 设备重新拉一次木鱼位图）又被启发式当成又敲了一下，
-# 一次敲击变成 +2。
-TAP_MAX_GAP_SEC = 29.0
-
-# 网页端敲击限流：同一 IP 每分钟最多 60 次。
-WEB_TAPS_PER_MIN = 60
 
 
 @contextmanager
@@ -77,17 +42,18 @@ def _locked():
 def _read_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as fh:
-            state = json.load(fh)
+            raw = json.load(fh)
     except (OSError, ValueError):
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    state.setdefault("count", 0)
-    state.setdefault("strike", 0)
-    state.setdefault("updated_at", 0)
-    state.setdefault("last_source", "")
-    state.setdefault("devices", {})
-    return state
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    # 只留这三个字段。老版本留下的 devices / explicit_client 那些是
+    # 「猜谁敲了」的记账，逻辑删掉后就没用了。
+    return {
+        "count": int(raw.get("count", 0) or 0),
+        "strike": int(raw.get("strike", 0) or 0),
+        "updated_at": int(raw.get("updated_at", 0) or 0),
+    }
 
 
 def _write_state(state):
@@ -98,8 +64,13 @@ def _write_state(state):
 
 
 def count():
-    """当前累计功德。"""
+    """当前累计功德（设备报上来的镜像）。"""
     return int(_read_state().get("count", 0) or 0)
+
+
+def strike():
+    """累计敲击次数（设备报上来的镜像）。"""
+    return int(_read_state().get("strike", 0) or 0)
 
 
 def stats():
@@ -111,186 +82,17 @@ def stats():
     }
 
 
-def frame_for_strike(strike):
-    """敲一次出一帧：击打 -> 挥过 -> 静息，循环。
+def report(count_value, strike_value=None):
+    """设备上报当前计数。**服务器只存不算。**
 
-    设备每敲一次只回一帧，三帧轮着来，按键连敲就是一段动画。
+    这是服务器唯一的写入路径 —— 网页端不能再敲（它敲了设备不知道，
+    两边各算一份只会越算越乱）。
     """
-    return int(strike) % 3
-
-
-def frame_path(frame):
-    return IMAGE_DIR / FRAME_FILES.get(frame, FRAME_FILES[FRAME_IDLE])
-
-
-@lru_cache(maxsize=16)
-def _frame_rgba_scaled(frame, px):
-    """素材帧 -> 缩放好的 RGBA。缓存住，因为 LANCZOS 缩放很贵（36ms）。
-
-    素材是固定文件，进程内不会变。改了图片要重启服务才生效。
-    """
-    path = frame_path(frame)
-    if not path.exists():
-        return None
-    rgba = Image.open(path).convert("RGBA")
-    if rgba.size != (px, px):
-        rgba = rgba.resize((px, px), Image.LANCZOS)
-    return rgba
-
-
-def frame_gray(frame, px):
-    """素材帧 -> 灰度图（白底），px 是输出边长。
-
-    PNG 是 RGBA：先按 alpha 合成到白底再转灰度，透明区是白不是黑。
-    """
-    rgba = _frame_rgba_scaled(frame, px)
-    if rgba is None:
-        return Image.new("L", (px, px), 255)
-    white = Image.new("L", (px, px), 255)
-    white.paste(rgba.convert("L"), (0, 0), rgba.split()[3])
-    return white
-
-
-_web_taps = {}
-
-
-def _allow_web_tap(ip):
-    now = time.time()
-    hits = [t for t in _web_taps.get(ip, []) if now - t < 60]
-    if len(hits) >= WEB_TAPS_PER_MIN:
-        _web_taps[ip] = hits
-        return False
-    hits.append(now)
-    _web_taps[ip] = hits
-    return True
-
-
-def tap(source="web", ip=None):
-    """网页端敲一下。count +1，返回新计数。"""
-    if ip and not _allow_web_tap(ip):
-        return None
     with _locked():
         state = _read_state()
-        state["count"] = int(state.get("count", 0) or 0) + 1
-        state["strike"] = int(state.get("strike", 0) or 0) + 1
+        state["count"] = max(0, int(count_value or 0))
+        if strike_value is not None:
+            state["strike"] = max(0, int(strike_value or 0))
         state["updated_at"] = int(time.time())
-        state["last_source"] = source
         _write_state(state)
         return {"count": state["count"], "strike": state["strike"]}
-
-
-def note_page_explicit(device_key, page_id, frame):
-    """固件显式指定要显示的帧（请求带 ?f=N）。
-
-    只有击打帧（f=1）计一次功德 —— 一次按键连发三帧请求，
-    算起来还是敲一下、功德 +1。挥过帧和静息帧只是同一次敲击的后续画面。
-
-    返回 (当前计数, 要显示的帧)。
-    """
-    frame = int(frame) % 3
-    if not device_key:
-        return count(), FRAME_IDLE
-    with _locked():
-        state = _read_state()
-        devices = state.setdefault("devices", {})
-        device = devices.setdefault(device_key, {})
-        now = time.time()
-        if page_id == MERIT_PAGE_ID and frame == FRAME_STRIKE:
-            state["count"] = int(state.get("count", 0) or 0) + 1
-            state["strike"] = int(state.get("strike", 0) or 0) + 1
-            state["updated_at"] = int(now)
-            state["last_source"] = "device"
-        # 不动 last_kind / last_page / last_page_at ——
-        # 那是「自动轮询 vs 用户按键」的启发式依据。
-        # 显式帧的敲击请求不参与它，否则三帧请求会把下一次自动轮询
-        # 误判成又敲了一下。
-        #
-        # 但要记住「这台设备会显式上报敲击」：它的新版固件，敲击一律
-        # 走 ?f=，那条「靠请求间隔猜敲击」的启发式对它永久关闭。
-        # 不关的话一次敲击会被算成两次（显式 +1，紧随的普通刷新又 +1）。
-        device["explicit_client"] = True
-        _write_state(state)
-        count_v = int(state.get("count", 0) or 0)
-    return count_v, frame
-
-
-def note_page_explicit_batch(device_key, page_id, frames):
-    """固件一次要多帧（请求带 ?f=1,2,0 —— 木鱼敲击的三帧）。
-
-    为什么合并成一次请求：设备走 frp 隧道到公网域名，一次往返约 450ms，
-    分三次请求就是 1.4 秒，比面板刷新本身（3 × 420ms）还慢。
-
-    计数语义和逐帧请求完全一致：**只有击打帧（f=1）计一次功德**，
-    三帧一次取回也算敲一下、功德 +1。三帧用同一个计数渲染。
-
-    返回渲染用的计数。
-    """
-    frames = [int(f) % 3 for f in frames]
-    if not device_key:
-        return count()
-    with _locked():
-        state = _read_state()
-        devices = state.setdefault("devices", {})
-        device = devices.setdefault(device_key, {})
-        count_v = int(state.get("count", 0) or 0)
-        if FRAME_STRIKE in frames:
-            count_v += 1
-            state["count"] = count_v
-            state["strike"] = int(state.get("strike", 0) or 0) + 1
-            state["updated_at"] = int(time.time())
-            state["last_source"] = "device"
-        # 这台设备用显式帧上报 —— 旧启发式对它永久关闭（见文件头注释）。
-        device["explicit_client"] = True
-        _write_state(state)
-    return count_v
-
-
-def note_manifest(device_key):
-    """设备拉了 manifest。记下来 —— 下一次位图请求若紧跟其后，就是自动轮询。"""
-    if not device_key:
-        return
-    with _locked():
-        state = _read_state()
-        devices = state.setdefault("devices", {})
-        device = devices.setdefault(device_key, {})
-        device["last_kind"] = "manifest"
-        _write_state(state)
-
-
-def note_page(device_key, page_id):
-    """设备拉了某个页面的位图。
-
-    返回 (是否算敲了一下, 当前计数, 该显示哪一帧)。
-    """
-    if not device_key:
-        return False, count(), FRAME_IDLE
-    with _locked():
-        state = _read_state()
-        devices = state.setdefault("devices", {})
-        device = devices.setdefault(device_key, {})
-        now = time.time()
-        is_tap = False
-        # explicit_client = 这台设备发过 ?f= 显式请求 = 新版固件。
-        # 新版固件的敲击一律显式上报，这条启发式对它是重复计数，
-        # 一次敲击会被算成两次。只对旧固件保留这条猜测。
-        if page_id == MERIT_PAGE_ID and not device.get("explicit_client"):
-            last_kind = device.get("last_kind", "")
-            last_page = device.get("last_page", "")
-            last_at = float(device.get("last_page_at", 0.0) or 0.0)
-            if (last_kind == "page"
-                    and last_page == MERIT_PAGE_ID
-                    and (now - last_at) < TAP_MAX_GAP_SEC):
-                is_tap = True
-                state["count"] = int(state.get("count", 0) or 0) + 1
-                state["strike"] = int(state.get("strike", 0) or 0) + 1
-                state["updated_at"] = int(now)
-                state["last_source"] = "device"
-        device["last_kind"] = "page"
-        device["last_page"] = page_id
-        device["last_page_at"] = now
-        _write_state(state)
-        count_v = int(state.get("count", 0) or 0)
-        strike = int(state.get("strike", 0) or 0)
-    if is_tap:
-        return True, count_v, frame_for_strike(strike)
-    return False, count_v, FRAME_IDLE

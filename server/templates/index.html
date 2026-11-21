@@ -59,9 +59,10 @@
         <p class="note">两颗都是<strong>外接微动开关</strong>，一脚接引脚、一脚接 GND，固件用内部上拉。</p>
         <div class="keymap">
           <div class="keymap-row"><span class="k">A 键（GPIO5）</span><span class="v">短按 下一页 · 长按 计时器页换预设时段</span></div>
-          <div class="keymap-row"><span class="k">B 键（GPIO2）</span><span class="v">短按 计时器页启停 / 木鱼页敲一下 · 长按 计时器页回满 / 其它页配网</span></div>
+          <div class="keymap-row"><span class="k">B 键（GPIO2）</span><span class="v">短按 计时器页启停 / 木鱼页敲一下 · 长按 计时器页回满 / 木鱼页清零 / 其它页配网</span></div>
         </div>
         <p class="note">计时器页上 B 键是计时器专用：短按 启停 · 长按 回满；换预设在 A 键长按。</p>
+        <p class="note">木鱼页上 B 键是木鱼专用：短按 敲一下（+1）· 长按 清零（只清功德，累计敲击次数保留）。其它页长按 B 进配网。</p>
         <p class="note">上电和复位时别按住 B 键 —— GPIO2 是启动采样脚，按住会进下载模式。</p>
       </div>
 
@@ -143,33 +144,35 @@
             {% endif %}
           </p>
           <p class="note">这张图是主机端渲染器画的 —— 编译的是固件里<strong>同一份</strong>
-            画布和版式代码，所以像素和设备上的一致，不是「长得像」。
-            画面上的时间是服务端当前时间（时区同样 +8），
+            画布和版式代码，所以像素和设备上的一致，不是「长得像」。</p>
+          {% if f.id == 'merit' %}
+          <p class="note">整页在<strong>设备本地</strong>渲染：三帧位图和数字字模都烘焙在固件里，
+            计数存在设备的 NVS 里 —— <strong>不拉位图、零流量</strong>，断网也能敲、能计数、能清零。</p>
+          <p class="note">敲没敲<strong>只有设备知道</strong>：它把当前计数报上来，
+            服务器只存一份镜像，不猜「用户敲了没」—— 猜就是「一次敲击被算成两次」的根源。</p>
+          {% else %}
+          <p class="note">画面上的时间是服务端当前时间（时区同样 +8），
             设备校时之后显示的也是这个时间。</p>
           <p class="note">屏上只有<strong>日期 + 时间</strong>，没有标题、没有秒数、
             没有状态文字 —— 干净点，别塞没用的信息。</p>
+          {% endif %}
           {% else %}
           <div class="preview-wrap">
             <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview">
           </div>
           <p class="note">设备真正收到的就是这张 1bpp 位图。渲染走 3 倍超采样 + 灰度抗锯齿，
             再量化成黑白，所以小字和图标边缘是连贯的，不是阶梯。</p>
-          {% if f.id == 'merit' %}
-          <p class="note">设备端在木鱼页按 <strong>B 键</strong>就是敲一下：立刻 +1，
-            同时播击打 / 挥过 / 静息三帧，最后停在静息帧。</p>
-          {% endif %}
           {% endif %}
         </div>
 
         <div class="card">
           {% if f.id == 'merit' %}
-          <h2>赛博木鱼 <span class="muted">WEB</span></h2>
-          <div class="fish-stage" id="fish-stage" title="点一下，敲一记">
-            <img id="fish-img" src="images/1.png" alt="木鱼">
-            <span class="fish-plus" id="fish-plus">功德 +1</span>
-          </div>
+          <h2>赛博木鱼 <span class="muted">设备计数</span></h2>
           <div class="fish-count"><span id="fish-count">{{ merit_count }}</span></div>
-          <p class="note">点木鱼敲一下，功德 +1。只增不减，不按天清零 —— 和设备上那个是同一个计数。</p>
+          <p class="note">设备上报的当前累计功德。只增不减，除非在木鱼页<strong>长按 B 键清零</strong>
+            （清零只清功德，累计敲击次数保留）。</p>
+          <p class="note">这里<strong>只读</strong>：敲击在设备上按 B 键，计数由设备自己记。
+            网页端不再能敲 —— 两边各算一份只会越算越乱。</p>
           {% else %}
           <h2>配置</h2>
           {% if f.fields %}
@@ -334,6 +337,11 @@ window.addEventListener('hashchange', function () {
       badge.textContent = j.online ? '设备在线' : '设备离线';
       badge.className = 'badge ' + (j.online ? 'ok' : 'dim');
     }
+    // 功德：设备上报的数，服务器只存镜像。5 秒刷一次。
+    if (j.merit && typeof j.merit.count === 'number') {
+      var mc = document.getElementById('fish-count');
+      if (mc) mc.textContent = j.merit.count;
+    }
   }
 
   paint();
@@ -345,103 +353,6 @@ window.addEventListener('hashchange', function () {
       .catch(function () {});
   }
   setInterval(poll, 5000);
-})();
-
-// ---- 赛博木鱼 ----
-(function () {
-  var img = document.getElementById('fish-img');
-  var plus = document.getElementById('fish-plus');
-  var counter = document.getElementById('fish-count');
-  var stage = document.getElementById('fish-stage');
-  if (!img || !stage) return;
-  // 三帧先下载并解码，再开始播。
-  // 不预载的话，每次点击都在等网络回来，中间帧还没显示就被下一帧顶掉 ——
-  // 看起来就是「点一下只变一张图」。
-  var frames = ['images/1.png', 'images/2.png', 'images/3.png'];
-  // 预载的 Promise 必须留着：第一次点击可能早于解码完成，
-  // 不 await 就直接上屏，中间帧会被下一帧顶掉 —— 看起来只变了一张图。
-  var preload = Promise.all(frames.map(function (u) {
-    return new Promise(function (res) {
-      var im = new Image();
-      im.onload = function () {
-        if (im.decode) im.decode().then(res, res);
-        else res();
-      };
-      im.onerror = function () { res(); };
-      im.src = u;
-    });
-  }));
-  var audio = null;
-
-  // 一敲一拍：击打 -> 挥过 -> 回静息。
-  // 素材 1=举槌静息 2=击打 3=挥过，所以播放顺序是 2 -> 3 -> 1。
-  // 三帧连着播完，最后一帧回到静息，不停在挥过帧上。
-  var SEQ = [frames[1], frames[2], frames[0]];
-  var STEP_MS = 100;   // 每帧 100ms，三帧全程 300ms 收尾
-  var playToken = 0;   // 连点时作废旧的一次播放，从头重播
-
-  function playKnock() {
-    var my = ++playToken;
-    preload.then(function () {
-      if (my !== playToken) return;
-      var step = 0;
-      img.src = SEQ[0];
-      (function next() {
-        step++;
-        if (step >= SEQ.length) return;
-        setTimeout(function () {
-          if (my !== playToken) return;
-          img.src = SEQ[step];
-          next();
-        }, STEP_MS);
-      })();
-    });
-  }
-
-  function knock() {
-    fetch('api/merit/tap', {method: 'POST'})
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        if (j && typeof j.count === 'number') counter.textContent = j.count;
-      })
-      .catch(function () {});
-    sound();
-    playKnock();
-    plus.classList.remove('show');
-    void plus.offsetWidth;
-    plus.classList.add('show');
-  }
-
-  function sound() {
-    try {
-      if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
-      if (audio.state === 'suspended') audio.resume();
-      var t = audio.currentTime;
-      var osc = audio.createOscillator();
-      var og = audio.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(230, t);
-      osc.frequency.exponentialRampToValueAtTime(90, t + 0.09);
-      og.gain.setValueAtTime(0.0001, t);
-      og.gain.exponentialRampToValueAtTime(0.5, t + 0.006);
-      og.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-      osc.connect(og).connect(audio.destination);
-      osc.start(t); osc.stop(t + 0.24);
-      var len = Math.floor(audio.sampleRate * 0.05);
-      var buf = audio.createBuffer(1, len, audio.sampleRate);
-      var ch = buf.getChannelData(0);
-      for (var i = 0; i < len; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
-      var src = audio.createBufferSource();
-      src.buffer = buf;
-      var bp = audio.createBiquadFilter();
-      bp.type = 'bandpass'; bp.frequency.value = 1700; bp.Q.value = 1.2;
-      var ng = audio.createGain(); ng.gain.value = 0.22;
-      src.connect(bp).connect(ng).connect(audio.destination);
-      src.start(t);
-    } catch (e) {}
-  }
-
-  stage.addEventListener('click', knock);
 })();
 </script>
 </body>
