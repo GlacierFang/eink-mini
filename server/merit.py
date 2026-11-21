@@ -209,8 +209,6 @@ def note_page_explicit(device_key, page_id, frame):
         # 走 ?f=，那条「靠请求间隔猜敲击」的启发式对它永久关闭。
         # 不关的话一次敲击会被算成两次（显式 +1，紧随的普通刷新又 +1）。
         device["explicit_client"] = True
-        if page_id == MERIT_PAGE_ID and frame == FRAME_STRIKE:
-            device["last_strike_at"] = now
         _write_state(state)
         count_v = int(state.get("count", 0) or 0)
     return count_v, frame
@@ -241,7 +239,6 @@ def note_page_explicit_batch(device_key, page_id, frames):
             state["strike"] = int(state.get("strike", 0) or 0) + 1
             state["updated_at"] = int(time.time())
             state["last_source"] = "device"
-            device["last_strike_at"] = time.time()
         # 这台设备用显式帧上报 —— 旧启发式对它永久关闭（见文件头注释）。
         device["explicit_client"] = True
         _write_state(state)
