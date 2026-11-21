@@ -35,10 +35,13 @@ MERIT_PAGE_ID = "merit"
 
 # 判定「用户主动敲」而不是「自动轮询」：
 #
+# 这是**旧固件**的判定方式：老固件敲木鱼就是「再拉一次木鱼位图」，
+# 服务端靠「两次紧挨着的木鱼位图请求」猜用户敲没敲。
+#
 # 固件每 30 秒拉一次 manifest，拉完立刻拉当前页位图 ——
 # 所以稳态下请求序列是 manifest -> 位图，一对一对的。
-# 用户在木鱼页按 B 键（刷新当前页）会多出一次位图请求，
-# 前面没有 manifest 兜底 —— 这一对位图请求挨得很近。
+# 用户敲一下会多出一次位图请求，前面没有 manifest 兜底 ——
+# 这一对位图请求挨得很近。
 #
 # 只认「上一次也是木鱼页位图」：从别的页切进木鱼页也会多一次请求，
 # 但那次的上一请求是别的页，排掉。
@@ -46,6 +49,13 @@ MERIT_PAGE_ID = "merit"
 # 29 秒的上限：manifest 拉失败时固件会自己补一次位图（周期 30 秒），
 # 那次也是没有 manifest 兜底，但离上一次拉取超过 30 秒，不算敲。
 # 卡在 29 秒是为了把「误判窗口」压到 1 秒：用户在前 29 秒内敲都算数。
+#
+# **新版固件不走这条路**：它的敲击带 ?f= 显式上报（见 note_page_explicit
+# / note_page_explicit_batch）。一旦某台设备发过显式请求，就在它自己的
+# 状态里记下 explicit_client —— 那条启发式对它永久关闭。
+# 不关的话会多算：显式敲击计 +1，紧随其后的普通刷新（计数变了 ->
+# 页面版本变了 -> 设备重新拉一次木鱼位图）又被启发式当成又敲了一下，
+# 一次敲击变成 +2。
 TAP_MAX_GAP_SEC = 29.0
 
 # 网页端敲击限流：同一 IP 每分钟最多 60 次。
@@ -194,6 +204,13 @@ def note_page_explicit(device_key, page_id, frame):
         # 那是「自动轮询 vs 用户按键」的启发式依据。
         # 显式帧的敲击请求不参与它，否则三帧请求会把下一次自动轮询
         # 误判成又敲了一下。
+        #
+        # 但要记住「这台设备会显式上报敲击」：它的新版固件，敲击一律
+        # 走 ?f=，那条「靠请求间隔猜敲击」的启发式对它永久关闭。
+        # 不关的话一次敲击会被算成两次（显式 +1，紧随的普通刷新又 +1）。
+        device["explicit_client"] = True
+        if page_id == MERIT_PAGE_ID and frame == FRAME_STRIKE:
+            device["last_strike_at"] = now
         _write_state(state)
         count_v = int(state.get("count", 0) or 0)
     return count_v, frame
@@ -215,6 +232,8 @@ def note_page_explicit_batch(device_key, page_id, frames):
         return count()
     with _locked():
         state = _read_state()
+        devices = state.setdefault("devices", {})
+        device = devices.setdefault(device_key, {})
         count_v = int(state.get("count", 0) or 0)
         if FRAME_STRIKE in frames:
             count_v += 1
@@ -222,7 +241,10 @@ def note_page_explicit_batch(device_key, page_id, frames):
             state["strike"] = int(state.get("strike", 0) or 0) + 1
             state["updated_at"] = int(time.time())
             state["last_source"] = "device"
-            _write_state(state)
+            device["last_strike_at"] = time.time()
+        # 这台设备用显式帧上报 —— 旧启发式对它永久关闭（见文件头注释）。
+        device["explicit_client"] = True
+        _write_state(state)
     return count_v
 
 
@@ -251,7 +273,10 @@ def note_page(device_key, page_id):
         device = devices.setdefault(device_key, {})
         now = time.time()
         is_tap = False
-        if page_id == MERIT_PAGE_ID:
+        # explicit_client = 这台设备发过 ?f= 显式请求 = 新版固件。
+        # 新版固件的敲击一律显式上报，这条启发式对它是重复计数，
+        # 一次敲击会被算成两次。只对旧固件保留这条猜测。
+        if page_id == MERIT_PAGE_ID and not device.get("explicit_client"):
             last_kind = device.get("last_kind", "")
             last_page = device.get("last_page", "")
             last_at = float(device.get("last_page_at", 0.0) or 0.0)
