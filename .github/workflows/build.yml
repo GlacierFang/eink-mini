@@ -193,3 +193,39 @@ jobs:
         with:
           name: build-log
           path: firmware/build.log
+
+  # 主机渲染器（固件版式的主机端复刻）必须在 CI 里编过。
+  #
+  # 以前漏了 src/ink_font_state.cpp，链接报 undefined reference ——
+  # 而 CI 不跑这个工具，工具坏了整整一个月没人知道，
+  # 改计时器版式时连张预览图都出不来。
+  host-render:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 拉代码
+        uses: actions/checkout@v4
+
+      - name: 编译主机渲染器
+        working-directory: firmware
+        run: |
+          set -e
+          sh tools/render_host.sh frame timer /tmp/timer-done.bin state=DONE remaining=0
+          SZ=$(stat -c%s /tmp/timer-done.bin)
+          echo "帧长: $SZ"
+          test "$SZ" = "4736"
+
+      - name: 渲染预览图
+        working-directory: firmware
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pil
+          sh tools/render_host.sh /tmp/host-preview
+          ls -l /tmp/host-preview
+
+      - name: 上传预览图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-preview
+          path: /tmp/host-preview

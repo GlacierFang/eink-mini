@@ -90,6 +90,18 @@
 #define INK_HTTP_TIMEOUT_MS 15000
 #define INK_MAX_PAGES      12
 
+// ================================================================ 心跳与轮询
+//
+// 清单拉取就是设备的心跳 —— 每 INK_HEARTBEAT_PERIOD_MS 一次。
+// 服务端据此判设备在不在线，离线阈值按这个周期推（server/device_state.py）。
+//
+// 位图不再定时拉：清单里每页带版本号，版本变了才重新拉、才刷屏。
+// 设备停在时钟页时，除了这份清单，一个字节都不用多拉。
+#define INK_HEARTBEAT_PERIOD_MS (60UL * 1000UL)
+
+// 设备状态上报周期（当前页 + 计时器）。控制台靠它显示真实倒计时。
+#define INK_STATE_REPORT_PERIOD_MS (60UL * 1000UL)
+
 // ================================================================ 按键手势
 #define INK_KEY_LONG_MS      600   // 长按阈值
 #define INK_KEY_DOUBLE_MS    250   // 双击判定窗 / 单击确认延迟

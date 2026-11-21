@@ -13,8 +13,11 @@ BIN=/tmp/ink_host_render
 
 build() {
   echo "编译主机渲染器..."
+  # 源文件列表只有这一份。加了新字模（比如 ink_font_state.cpp）必须加进来 ——
+  # 漏了链接会报 undefined reference，而 CI 以前没跑这个工具，漏了也没人知道。
   g++ -std=c++11 -O2 -I src \
       src/ink_canvas.cpp src/ink_pages.cpp src/ink_font_big.cpp \
+      src/ink_font_state.cpp \
       tools/host_render.cpp \
       -o "$BIN"
 }

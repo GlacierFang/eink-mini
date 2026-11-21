@@ -173,7 +173,7 @@ def _page_entry(page_id):
 
 @app.after_request
 def no_cache(resp):
-    # 设备每 30 秒拉一次，别让中间代理缓存住旧帧
+    # 设备每 60 秒拉一次清单，别让中间代理缓存住旧清单
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -217,6 +217,10 @@ def index():
         config=cfg,
         device=state,
         device_online=device_state.is_online(state),
+        device_timer=device_state.timer_state(state),
+        device_content_age=device_state.content_age_seconds(state),
+        device_offline_after=device_state.OFFLINE_AFTER_SEC,
+        device_heartbeat=device_state.HEARTBEAT_PERIOD_SEC,
         weather=w,
         weather_at=weather.get_weather_at("weather"),
         hourly_weather=hourly_w,
@@ -475,13 +479,44 @@ def merit_image(name):
     return Response(path.read_bytes(), mimetype="image/png")
 
 
+@app.route("/api/device/state")
+def device_state_report():
+    """设备上报自己的状态（当前页 + 计时器）。
+
+    计时器状态只存在设备 RAM 里，服务端不猜、不假装看得到 ——
+    控制台要显示真实倒计时，只能靠设备报上来。
+    """
+    page = (request.args.get("page") or "-")[:40]
+    st = (request.args.get("state") or "READY").upper()
+    if st not in device_state.TIMER_STATES:
+        st = "READY"
+    try:
+        remain = max(0, int(request.args.get("remain") or 0))
+    except ValueError:
+        remain = 0
+    try:
+        preset = max(0, int(request.args.get("preset") or 0))
+    except ValueError:
+        preset = 0
+    state = device_state.record_report(
+        {"page": page, "timer": {"state": st, "remaining": remain, "preset": preset}},
+        ip=request.remote_addr,
+        user_agent=request.headers.get("User-Agent"),
+    )
+    return jsonify({"ok": True, "report": state.get("report")})
+
+
 @app.route("/api/device")
 def api_device():
     state = device_state.get_state()
     return jsonify(
         {
             "online": device_state.is_online(state),
+            "offline_after": device_state.OFFLINE_AFTER_SEC,
+            "heartbeat": device_state.HEARTBEAT_PERIOD_SEC,
             "state": state,
+            "timer": device_state.timer_state(state),
+            "content_age": device_state.content_age_seconds(state),
             "pages": [p["id"] for p in PAGES],
         }
     )

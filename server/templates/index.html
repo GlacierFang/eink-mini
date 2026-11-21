@@ -40,8 +40,18 @@
           <div class="kv-row"><span class="k">来源 IP</span><span class="v">{{ device.ip or '-' }}</span></div>
           <div class="kv-row"><span class="k">客户端</span><span class="v">{{ device.user_agent or '-' }}</span></div>
           <div class="kv-row"><span class="k">拉取次数</span><span class="v">清单 {{ device.manifest_fetched or 0 }} 次 · 位图 {{ device.pages_fetched or 0 }} 次</span></div>
+          <div class="kv-row"><span class="k">当前页</span><span class="v">{{ device_timer.page if device_timer.page and device_timer.page != '-' else '未知' }}</span></div>
+          <div class="kv-row"><span class="k">内容新鲜度</span><span class="v">
+            {% if device_content_age is not none %}最后一次下发位图是 {{ device_content_age }} 秒前
+            {% else %}还没下发过位图{% endif %}
+          </span></div>
         </div>
-        <p class="note">设备每 30 秒拉一次清单和位图。3 分钟内没有拉取算离线。</p>
+        <p class="note">设备每 {{ device_heartbeat }} 秒拉一次清单 —— 这就是心跳。
+          {{ device_offline_after }} 秒内没有任何请求算离线
+          （阈值 = 心跳周期 × 2 + HTTP 超时 + 余量，不是随手写的常数）。</p>
+        <p class="note">位图<strong>不再定时拉</strong>：清单里每页带一个版本号，
+          内容变了才重新拉、才刷屏。所以「设备在不在」和「内容新不新鲜」
+          是两件事，分开记 —— 设备停在时钟页时本来就没什么新内容。</p>
       </div>
 
       <div class="card">
@@ -87,6 +97,18 @@
             <a href="preview/{{ f.id }}.png?state=PAUSE" target="_blank">暂停</a>
             <a href="preview/{{ f.id }}.png?state=DONE" target="_blank">完成</a>
           </div>
+          <div class="kv" id="timer-live-wrap"
+               data-state="{{ device_timer.state }}"
+               data-remaining="{{ device_timer.remaining }}"
+               data-preset="{{ device_timer.preset }}"
+               data-at="{{ device_timer.at or 0 }}">
+            <div class="kv-row"><span class="k">设备实时状态</span><span class="v">
+              <span class="badge ok" id="timer-state">{{ device_timer.state }}</span>
+              <span id="timer-remain">{{ device_timer.remaining }}</span> 秒
+              {% if device_timer.preset %}· 预设 {{ device_timer.preset }} 分钟{% endif %}
+            </span></div>
+            <div class="kv-row"><span class="k">上报时间</span><span class="v">{{ device_timer.at_text or '设备还没上报过' }}</span></div>
+          </div>
           <p class="preview-meta">
             {% set meta = native_meta.get(f.id) %}
             {% if meta and meta.rendered_at_text %}
@@ -105,9 +127,9 @@
           <p class="note">预设固定在固件里：1 / 3 / 5 / 10 / 15 / 25 / 30 / 45 分钟。
             这一页完全在设备上跑，<strong>不拉位图、零流量</strong>，
             计时用设备的 millis()，所以断网、甚至没校过时都能用。</p>
-          <p class="note">上面这张是<strong>代表性画面</strong>（就绪状态、15 分钟档）。
-            设备上真实的倒计时存在设备自己的内存里，服务端看不到 —— 上面的
-            「其它状态」是按需渲染的示意，不是设备的实时数值。</p>
+          <p class="note">上面这张按<strong>设备上报的状态</strong>渲染（每 30 秒重画一次）。
+            下面的「设备实时状态」是设备主动上报的实时值 —— 倒计时在设备自己的
+            内存里跑，服务端不猜，只能靠设备报上来。</p>
           {% elif f.type == 'native' %}
           <div class="preview-wrap">
             <img id="preview-{{ f.id }}" src="preview/{{ f.id }}.png" alt="{{ f.id }} preview"
@@ -135,7 +157,7 @@
             再量化成黑白，所以小字和图标边缘是连贯的，不是阶梯。</p>
           {% if f.id == 'merit' %}
           <p class="note">设备端在木鱼页按 <strong>B 键</strong>就是敲一下：立刻 +1，
-            同时显示击打帧；约 30 秒后设备自动重拉，回到静息帧。</p>
+            同时播击打 / 挥过 / 静息三帧，最后停在静息帧。</p>
           {% endif %}
           {% endif %}
         </div>
@@ -267,6 +289,64 @@ window.addEventListener('hashchange', function () {
   var h = (location.hash || '').replace('#', '');
   if (h) switchTab(h);
 });
+
+// ---- 设备实时状态（倒计时 + 在线徽章）----
+(function () {
+  var wrap = document.getElementById('timer-live-wrap');
+  var badge = document.getElementById('badge-device');
+  var stateEl = document.getElementById('timer-state');
+  var remainEl = document.getElementById('timer-remain');
+  if (!wrap && !badge) return;
+
+  var cur = {
+    state: wrap ? (wrap.dataset.state || 'READY') : 'READY',
+    remain: wrap ? parseInt(wrap.dataset.remaining || '0', 10) : 0,
+    preset: wrap ? parseInt(wrap.dataset.preset || '0', 10) : 0,
+    at: wrap ? parseFloat(wrap.dataset.at || '0') : 0
+  };
+
+  function fmt(sec) {
+    sec = Math.max(0, sec | 0);
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  // 倒计时按经过的时间往下减 —— 设备端是匀速的（millis），这样和真机一致。
+  function paint() {
+    if (!remainEl) return;
+    var r = cur.remain;
+    if (cur.state === 'RUN' && cur.at) {
+      r = Math.max(0, cur.remain - Math.floor(Date.now() / 1000 - cur.at));
+    }
+    remainEl.textContent = fmt(r);
+  }
+
+  function apply(j) {
+    if (!j) return;
+    if (j.timer) {
+      cur.state = j.timer.state || cur.state;
+      cur.remain = j.timer.remaining || 0;
+      cur.preset = j.timer.preset || cur.preset;
+      cur.at = j.timer.at || 0;
+      if (stateEl) stateEl.textContent = cur.state;
+      paint();
+    }
+    if (badge && typeof j.online === 'boolean') {
+      badge.textContent = j.online ? '设备在线' : '设备离线';
+      badge.className = 'badge ' + (j.online ? 'ok' : 'dim');
+    }
+  }
+
+  paint();
+  setInterval(paint, 1000);
+  function poll() {
+    fetch('api/device', {cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(apply)
+      .catch(function () {});
+  }
+  setInterval(poll, 5000);
+})();
 
 // ---- 赛博木鱼 ----
 (function () {

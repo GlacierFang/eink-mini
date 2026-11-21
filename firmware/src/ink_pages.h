@@ -9,6 +9,11 @@ struct InkPageEntry {
   char id[40];
   char type[16];
   char title[48];
+  // 服务端给的内容指纹。变了才需要重新拉这一页的位图。
+  uint32_t version = 0;
+  // 已经画到屏上的版本。拉取失败不更新 —— 下一轮还会再试。
+  uint32_t appliedVersion = 0;
+  bool hasApplied = false;
 };
 
 struct InkPageList {

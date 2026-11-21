@@ -35,12 +35,17 @@ static InkTimer   g_timer;
 static InkPageList g_pages;
 static int      g_pageIndex = 0;
 static uint32_t g_lastManifestMs = 0;
+// 用户手动要求重拉当前位图（B 短按）。
+static bool     g_forceRefresh = false;
+// 计时器刚归零 —— 等一次全刷（设备没蜂鸣器，视觉是唯一提醒）。
+static bool     g_timerJustDone = false;
+// 设备状态上报节流（当前页 + 计时器）。
+static uint32_t g_lastStateReportMs = 0;
 // 时钟页按**分钟**重画。
 //
 // 原来按秒重画 —— 但屏上只显示 HH:MM，每秒的画面完全一样。
 // 等于每秒触发一次局刷，墨水屏残影会一直累积。
 static uint32_t g_lastClockMin = 0;
-static uint32_t g_lastPageFetchMs = 0;
 static bool     g_timeOk = false;
 // 切页 / 配网完成 / 首次上电时置 true，立即重绘。
 //
@@ -90,6 +95,39 @@ static void renderSelfTest(InkCanvas& c)
   c.drawText(196, 118, "GRAY CHECK", true, 1);
 }
 
+// 当前页是不是服务端下发位图的页
+static bool currentIsBitmap()
+{
+  if (g_pages.count <= 0 || g_pageIndex >= g_pages.count) return false;
+  return strcmp(g_pages.items[g_pageIndex].type, "bitmap") == 0;
+}
+
+// 当前页的位图要不要重新拉：
+//   - 从没拉过
+//   - 服务端版本变了（内容变了）
+//   - 用户手动要求刷新
+// 版本没变就不拉 —— 设备停在天气页时，一天也拉不了几次位图。
+static bool currentPageNeedsFetch()
+{
+  if (!currentIsBitmap()) return false;
+  const InkPageEntry& e = g_pages.items[g_pageIndex];
+  if (!g_pageCached[g_pageIndex] || !g_pageCache[g_pageIndex]) return true;
+  if (g_forceRefresh) return true;
+  if (!e.hasApplied) return true;
+  return e.version != e.appliedVersion;
+}
+
+// 计时器状态词。服务端和主机渲染器用同一套名字。
+static const char* timerStateLabel()
+{
+  switch (g_timer.state()) {
+    case INK_TIMER_RUNNING: return "RUN";
+    case INK_TIMER_PAUSED:  return "PAUSE";
+    case INK_TIMER_DONE:    return "DONE";
+    default:                return "READY";
+  }
+}
+
 // 把当前页画进画布
 static bool renderCurrentPage()
 {
@@ -101,22 +139,32 @@ static bool renderCurrentPage()
   }
 
   if (strcmp(curType, "bitmap") == 0) {
-    // bitmap 页：先拉新帧，拉不到才回退缓存。
+    // bitmap 页：版本变了才拉新帧，拉不到才回退缓存。
     //
-    // 原来是「有缓存就直接用缓存」，缓存一旦有了就再也不拉新帧 ——
-    // 天气页会永远停在开机那一帧，30 秒刷新形同虚设。
-    // 拉取节流在 loop() 里做（30 秒一次），这里不用再管。
-    if (g_frameBuf && g_client.fetchPageFrame(curId, g_frameBuf, INK_FRAME_BYTES)) {
+    // 原来是「每 30 秒拉一次」—— 内容没变也照拉照推。现在清单里每页带
+    // 版本号，只有版本变了才重新拉。
+    //
+    // 拉取节流在 loop() 里做，这里只管「这一页要不要重新拉」。
+    const InkPageEntry& e = g_pages.items[g_pageIndex];
+    bool cached = g_pageCached[g_pageIndex] && g_pageCache[g_pageIndex] != nullptr;
+    bool needFetch = !cached || g_forceRefresh || !e.hasApplied || e.version != e.appliedVersion;
+    if (needFetch && g_frameBuf && g_client.fetchPageFrame(curId, g_frameBuf, INK_FRAME_BYTES)) {
       if (!g_pageCache[g_pageIndex]) g_pageCache[g_pageIndex] = (uint8_t*)malloc(INK_FRAME_BYTES);
       if (g_pageCache[g_pageIndex]) {
         memcpy(g_pageCache[g_pageIndex], g_frameBuf, INK_FRAME_BYTES);
         g_pageCached[g_pageIndex] = true;
       }
       g_canvas.loadServerFrame(g_frameBuf, INK_FRAME_BYTES);
+      // 真拉到并上屏了，才记下这个版本 —— 拉失败下一轮还会再试。
+      g_pages.items[g_pageIndex].appliedVersion = e.version;
+      g_pages.items[g_pageIndex].hasApplied = true;
+      g_forceRefresh = false;
       return true;
     }
-    Serial.printf("[page] %s 拉取失败，回退缓存\n", curId);
-    if (g_pageCached[g_pageIndex] && g_pageCache[g_pageIndex]) {
+    if (needFetch) {
+      Serial.printf("[page] %s 拉取失败，回退缓存\n", curId);
+    }
+    if (cached) {
       g_canvas.loadServerFrame(g_pageCache[g_pageIndex], INK_FRAME_BYTES);
       return true;
     }
@@ -126,14 +174,7 @@ static bool renderCurrentPage()
   // native 页：本地渲染。clock 和 timer 走不同的渲染器。
   if (strcmp(curId, "timer") == 0) {
     // 计时器用 millis()，不依赖校时 —— 没校过时照样能跑。
-    const char* st = "READY";
-    switch (g_timer.state()) {
-      case INK_TIMER_RUNNING: st = "RUN";    break;
-      case INK_TIMER_PAUSED:  st = "PAUSE";  break;
-      case INK_TIMER_DONE:    st = "DONE";   break;
-      default:                st = "READY";  break;
-    }
-    inkRenderTimerPage(g_canvas, st, g_timer.remainingSec());
+    inkRenderTimerPage(g_canvas, timerStateLabel(), g_timer.remainingSec());
     return true;
   }
 
@@ -151,7 +192,6 @@ static void gotoPage(int idx)
   if (idx < 0) idx = g_pages.count - 1;
   if (idx >= g_pages.count) idx = 0;
   g_pageIndex = idx;
-  g_lastPageFetchMs = 0;   // 立即刷新
   g_lastClockMin = 0;      // 切回时钟页立刻重画，不等下一分钟
   g_lastTimerSec = 0;
   g_dirtyPage = true;      // 立刻重绘
@@ -162,15 +202,54 @@ static void refreshManifestIfDue()
   uint32_t now = millis();
   // g_lastManifestMs == 0 表示「还没拉过」—— 必须放行。
   //
-  // 原来是 now - g_lastManifestMs < 30000 就跳过。开机时 g_lastManifestMs
-  // 是 0 而 millis() 也才几十，差值 < 30000，于是第一次拉取被跳过，
-  // 之后要等 30 秒才拉。开机那 30 秒屏上是自检画面。
-  if (g_lastManifestMs != 0 && (now - g_lastManifestMs) < 30000UL) return;
+  // 清单拉取就是心跳：每 INK_HEARTBEAT_PERIOD_MS 一次，服务端靠它判在线。
+  if (g_lastManifestMs != 0 && (now - g_lastManifestMs) < INK_HEARTBEAT_PERIOD_MS) return;
   g_lastManifestMs = now;
   if (!g_net.connected()) return;
+
+  // 拉之前先记下当前是第几页、什么 id —— 拉完要判断「当前页变没变」。
+  char beforeId[40];
+  beforeId[0] = 0;
+  if (g_pages.count > 0 && g_pageIndex < g_pages.count) {
+    strncpy(beforeId, g_pages.items[g_pageIndex].id, sizeof(beforeId) - 1);
+  }
+  int beforeCount = g_pages.count;
+
   if (g_client.fetchManifest(g_pages)) {
     if (g_pageIndex >= g_pages.count) g_pageIndex = 0;
-    g_dirtyPage = true;   // 清单可能变了，重画一次当前页
+    char afterId[40];
+    afterId[0] = 0;
+    if (g_pageIndex < g_pages.count) {
+      strncpy(afterId, g_pages.items[g_pageIndex].id, sizeof(afterId) - 1);
+    }
+    // 清单变了才重画当前页 —— 版本没变说明内容没变，重画只是把同一帧
+    // 再推一遍（一次空拉 + 一次局刷判断）。
+    if (beforeCount != g_pages.count ||
+        strcmp(beforeId, afterId) != 0 ||
+        currentPageNeedsFetch()) {
+      g_dirtyPage = true;
+    }
+  }
+}
+
+// 把设备自己的状态报给服务端：当前页 + 计时器。
+//
+// 计时器状态只存在设备 RAM 里，服务端不猜、不假装看得到 ——
+// 控制台要显示真实倒计时，只能靠设备报上来。
+static void reportDeviceStateIfDue(bool force)
+{
+  uint32_t now = millis();
+  if (!force) {
+    if (g_lastStateReportMs != 0 && (now - g_lastStateReportMs) < INK_STATE_REPORT_PERIOD_MS) return;
+  }
+  g_lastStateReportMs = now;
+  if (!g_net.connected()) return;
+  const char* pageId = "";
+  if (g_pages.count > 0 && g_pageIndex < g_pages.count) pageId = g_pages.items[g_pageIndex].id;
+  if (!g_client.reportDeviceState(pageId, timerStateLabel(),
+                                  g_timer.remainingSec(),
+                                  (uint32_t)g_timer.presetMinutes())) {
+    Serial.println("[state] 上报失败");
   }
 }
 
@@ -235,6 +314,7 @@ static void handleKeys()
             g_timer.toggle();          // 开始 / 暂停 / 继续 / DONE 后重开
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
+            reportDeviceStateIfDue(true);
             Serial.printf("[timer] 短按 -> state=%d 剩余 %lus\n",
                           (int)g_timer.state(), (unsigned long)g_timer.remainingSec());
             break;
@@ -242,12 +322,14 @@ static void handleKeys()
             g_timer.cyclePreset();     // 换预设（RUNNING 时忽略）
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
+            reportDeviceStateIfDue(true);
             Serial.printf("[timer] 双击 -> 预设 %d 分钟\n", g_timer.presetMinutes());
             break;
           case INK_EV_LONG:
             g_timer.reset();            // 重置
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
+            reportDeviceStateIfDue(true);
             Serial.println("[timer] 长按 -> 重置");
             break;
           default: break;
@@ -256,7 +338,7 @@ static void handleKeys()
         switch (ev) {
           case INK_EV_SHORT:
             if (knockMeritOnMeritPage()) break;                  // 木鱼页：一次按键播三帧
-            g_lastPageFetchMs = 0;                                // 短按：刷新当前页
+            g_forceRefresh = true;                                // 短按：强制重拉当前页
             g_dirtyPage = true;                                  // 立刻重绘
             break;
           case INK_EV_DOUBLE:
@@ -315,6 +397,7 @@ void loop()
 
   uint32_t now = millis();
   refreshManifestIfDue();
+  reportDeviceStateIfDue(false);
 
   // 页面类型判断。
   //
@@ -334,18 +417,26 @@ void loop()
   bool doRender = false;
   bool doFull = false;
 
+  // 计时器每一轮都推进，跟当前在哪一页无关。
+  //
+  // 以前只有停在计时器页时才 tick() —— 离开页面倒计时就不推进，状态卡在
+  // RUNNING，回来时靠一次大 dt 补算，屏上是「突然就结束了」。现在离开页面
+  // 也照常走完，归零那一刻的状态变化不会丢。
+  bool timerFinished = g_timer.tick();
+  if (timerFinished) g_timerJustDone = true;
+
   if (isTimer) {
     // 计时器每秒重画，走局刷只脏数字区域。
     //
     // 不依赖校时：计时器用 millis()，没校过时照样能跑。
-    // 归零那一刻做一次全刷反色提醒（设备没有蜂鸣器，视觉是唯一提醒）。
-    bool finished = g_timer.tick();
+    // 归零那一刻做一次全刷提醒（设备没有蜂鸣器，视觉是唯一提醒）。
     uint32_t sec = g_timer.remainingSec();
-    if (sec != g_lastTimerSec || finished) {
+    if (sec != g_lastTimerSec || timerFinished || g_timerJustDone) {
       g_lastTimerSec = sec;
       doRender = true;
-      doFull = finished;
-      if (finished) Serial.println("[timer] 计时结束");
+      doFull = g_timerJustDone;
+      g_timerJustDone = false;
+      if (timerFinished) Serial.println("[timer] 计时结束");
     }
   } else if (isLocal) {
     // 时钟页按分钟重画，走局刷只脏数字区域。
@@ -360,11 +451,8 @@ void loop()
       doRender = true;
     }
   } else {
-    // bitmap 页：30 秒拉一次
-    if (g_dirtyPage || (now - g_lastPageFetchMs) > 30000UL) {
-      g_lastPageFetchMs = now;
-      doRender = true;
-    }
+    // bitmap 页：版本变了才重新拉，别的什么都不做。
+    if (currentPageNeedsFetch()) doRender = true;
   }
 
   // 切页、配网完成、首次上电等状态变化：立刻重绘。

@@ -63,9 +63,31 @@ bool InkClient::fetchPageFrameAt(const char* id, int frame, uint8_t* dst, size_t
   return fetchText(path, dst, dstLen) == dstLen;
 }
 
+bool InkClient::reportDeviceState(const char* pageId, const char* timerState,
+                                 uint32_t timerRemain, uint32_t timerPreset)
+{
+  char path[192];
+  snprintf(path, sizeof(path),
+           "/api/device/state?page=%s&state=%s&remain=%lu&preset=%lu",
+           (pageId && pageId[0]) ? pageId : "-",
+           (timerState && timerState[0]) ? timerState : "READY",
+           (unsigned long)timerRemain,
+           (unsigned long)timerPreset);
+  // 响应体不看，只要请求到了就算上报成功。
+  uint8_t sink[8];
+  return fetchText(path, sink, sizeof(sink)) > 0;
+}
+
 bool InkClient::fetchManifest(InkPageList& out)
 {
-  out.count = 0;
+  // 解析到一份新清单，再按 id 把「已经上屏的版本」继承过来。
+  //
+  // 清单每 60 秒来一次，位图只在版本变了才重拉 —— 「上屏版本」必须跨
+  // 清单刷新活下来，否则每次都被当成「没拉过」，等于又回到定时拉位图。
+  //
+  // 拉失败不动 out：一次网络抖动不该把整份页面清单清空。
+  static InkPageList fresh;
+  fresh.count = 0;
   uint8_t* buf = (uint8_t*)malloc(4096);
   if (!buf) return false;
   char path[64];
@@ -87,14 +109,15 @@ bool InkClient::fetchManifest(InkPageList& out)
       }
       if (arr >= 0 && doc.node(arr).type == J_ARR) {
         int n = doc.childCount(arr);
-        for (int i = 0; i < n && out.count < INK_MAX_PAGES; i++) {
+        for (int i = 0; i < n && fresh.count < INK_MAX_PAGES; i++) {
           int c = doc.childAt(arr, i);
           if (c < 0) break;
-          InkPageEntry& e = out.items[out.count];
+          InkPageEntry& e = fresh.items[fresh.count];
           memset(&e, 0, sizeof(e));
           int idn = doc.findKey(c, "id");
           int tn = doc.findKey(c, "type");
           int tt = doc.findKey(c, "title");
+          int vn = doc.findKey(c, "version");
           if (idn >= 0 && doc.node(idn).type == J_STR) {
             strncpy(e.id, doc.str(doc.node(idn)), sizeof(e.id) - 1);
           }
@@ -104,7 +127,12 @@ bool InkClient::fetchManifest(InkPageList& out)
           if (tt >= 0 && doc.node(tt).type == J_STR) {
             strncpy(e.title, doc.str(doc.node(tt)), sizeof(e.title) - 1);
           }
-          if (e.id[0]) out.count++;
+          // 版本号：内容指纹。设备靠它判断「这一页要不要重新拉」。
+          if (vn >= 0 && doc.node(vn).type == J_NUM) {
+            double v = doc.node(vn).num;
+            if (v >= 0.0 && v < 4294967296.0) e.version = (uint32_t)v;
+          }
+          if (e.id[0]) fresh.count++;
         }
       }
     } else {
@@ -112,6 +140,20 @@ bool InkClient::fetchManifest(InkPageList& out)
     }
   }
   free(buf);
-  if (ok) Serial.printf("[http] manifest: %d 页\n", out.count);
-  return ok;
+  if (!ok) return false;
+
+  // 按 id 继承「已经上屏的版本」
+  for (int i = 0; i < fresh.count; i++) {
+    for (int j = 0; j < out.count; j++) {
+      if (strcmp(out.items[j].id, fresh.items[i].id) == 0) {
+        fresh.items[i].appliedVersion = out.items[j].appliedVersion;
+        fresh.items[i].hasApplied = out.items[j].hasApplied;
+        break;
+      }
+    }
+  }
+  out = fresh;
+
+  Serial.printf("[http] manifest: %d 页\n", out.count);
+  return true;
 }

@@ -48,7 +48,6 @@ private:
   int presetIndex_ = 4;          // 默认 15 分钟
   uint32_t remainMs_ = 0;        // 剩余毫秒（RUNNING 时是快照值）
   uint32_t lastTickMs_ = 0;      // 上次 tick 的 millis
-  bool doneAnnounced_ = false;
 
   void setPreset(int idx);
   void refreshRemain();

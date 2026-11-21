@@ -4,7 +4,11 @@
 // 预设分钟数。放在固件里，不走服务端 ——
 // 改预设要重编固件，但预设这东西本来也不常改。
 //
-// 25 分钟在第一位以外的位置？番茄钟最常用的是 25，所以默认索引指向它。
+// 数组从小到大排，双击换预设就按这个顺序循环：
+// 15 -> 25 -> 30 -> 45 -> 1 -> 3 -> 5 -> 10 -> 15（回到起点）。
+//
+// 默认索引 4 = 15 分钟。旧注释写的是「默认指向 25」，但 25 在下标 5，
+// 代码取的从来都是 15 —— 注释和代码对不上，按代码为准。
 const int InkTimer::PRESET_MINUTES[8] = { 1, 3, 5, 10, 15, 25, 30, 45 };
 const int InkTimer::PRESET_COUNT = 8;
 
@@ -46,11 +50,15 @@ void InkTimer::toggle()
     case INK_TIMER_PAUSED:
       state_ = INK_TIMER_RUNNING;
       lastTickMs_ = millis();
-      doneAnnounced_ = false;
       break;
     case INK_TIMER_RUNNING:
-      // 暂停：先把已跑的补进剩余，再停
-      tick();
+      // 暂停：先把已跑的补进剩余，再停。
+      //
+      // tick() 可能刚好把状态推到 DONE（归零那一刻用户按暂停）。
+      // 那时不能覆盖成 PAUSED —— 屏上会出现「PAUSE 00:00」这种自相矛盾的
+      // 状态，归零的全刷提醒也一起丢了。tick() 返回 true 就是「刚归零」，
+      // 保持 DONE 不动。
+      if (tick()) return;
       state_ = INK_TIMER_PAUSED;
       break;
     case INK_TIMER_DONE:
@@ -58,7 +66,6 @@ void InkTimer::toggle()
       refreshRemain();
       state_ = INK_TIMER_RUNNING;
       lastTickMs_ = millis();
-      doneAnnounced_ = false;
       break;
   }
 }
@@ -77,7 +84,6 @@ void InkTimer::reset()
   state_ = INK_TIMER_READY;
   refreshRemain();
   lastTickMs_ = millis();
-  doneAnnounced_ = false;
 }
 
 bool InkTimer::tick()
@@ -94,7 +100,6 @@ bool InkTimer::tick()
     remainMs_ = 0;
     if (state_ != INK_TIMER_DONE) {
       state_ = INK_TIMER_DONE;
-      doneAnnounced_ = true;
       return true;
     }
     return false;

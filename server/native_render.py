@@ -8,9 +8,8 @@ native 页是设备本地画的，服务端不下发位图 —— 但控制台�
 
 预览代表什么状态：
   - 时钟页：服务端当前时间。设备校时后显示的也是这个时间（时区同样 +8）。
-  - 计时器页：**代表性状态**（READY / 15 分钟预设）。
-    真实倒计时在设备 RAM 里，服务端看不到，也不假装看得到。
-    控制台会明确标注这一点。
+  - 计时器页：**设备上报的状态**（设备主动上报当前状态，服务端不猜）。
+    没上报过时退回代表性状态（READY / 15 分钟预设）。
 
 帧格式和设备收到的 /api/page/*.bin 完全一致：
 296x128、1bpp、MSB first、每行 37 字节、共 4736 字节，1 = 黑。
@@ -25,6 +24,8 @@ import subprocess
 import tempfile
 import threading
 import time
+
+import device_state
 
 log = logging.getLogger("eink-mini.native")
 
@@ -49,7 +50,7 @@ SRC_FILES = [
 
 
 CLOCK_TTL = 10        # 时钟页有秒，10 秒刷一次
-TIMER_TTL = 600       # 代表性状态基本不变
+TIMER_TTL = 30        # 计时器预览跟着设备上报的状态走，30 秒刷一次
 TIMER_STATES = ("READY", "RUN", "PAUSE", "DONE")
 TIMER_REMAIN = {"READY": 900, "RUN": 754, "PAUSE": 754, "DONE": 0}
 
@@ -148,6 +149,20 @@ def _timer_kwargs(state="READY", remaining=900):
     }
 
 
+def _reported_timer():
+    """设备上报的计时器状态；没上报过就退回代表性状态。"""
+    try:
+        t = device_state.timer_state()
+    except Exception:
+        t = None
+    if not t:
+        return "READY", TIMER_REMAIN["READY"]
+    state = t.get("state") or "READY"
+    if state not in TIMER_STATES:
+        state = "READY"
+    return state, int(t.get("remaining") or 0)
+
+
 def render_timer_state(state):
     """按需渲染计时器的某一种状态（不落缓存）。"""
     state = str(state).upper()
@@ -166,20 +181,21 @@ def _meta_path(page):
     return CACHE_DIR / ("%s.json" % page)
 
 
-def _write_cache(page, img):
+def _write_cache(page, img, state=None):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     png = _cache_path(page)
     tmp = png.with_name(png.name + ".tmp")
     img.save(str(tmp), format="PNG")
     os.replace(str(tmp), str(png))
+    meta = {
+        "page": page,
+        "rendered_at": time.time(),
+        "rendered_at_text": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if state:
+        meta["state"] = state
     _meta_path(page).write_text(
-        json.dumps(
-            {
-                "page": page,
-                "rendered_at": time.time(),
-                "rendered_at_text": time.strftime("%Y-%m-%d %H:%M:%S"),
-            }
-        ),
+        json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -204,8 +220,9 @@ def _refresh(page):
     if page == "clock":
         img = frame_to_image(_run_frame("clock", **_clock_kwargs()))
     else:
-        img = frame_to_image(_run_frame("timer", **_timer_kwargs()))
-    _write_cache(page, img)
+        state, remain = _reported_timer()
+        img = frame_to_image(_run_frame("timer", **_timer_kwargs(state, remain)))
+    _write_cache(page, img, state=state if page != "clock" else None)
 
 
 def _stale(page, ttl):
