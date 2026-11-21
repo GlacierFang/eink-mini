@@ -82,7 +82,7 @@ bool InkClient::reportDeviceState(const char* pageId, const char* timerState,
 
 bool InkClient::fetchMeritCount(uint32_t* count, uint32_t* strike)
 {
-  if (!g_net || !g_net.connected()) return false;
+  if (!g_net || !g_net->connected()) return false;
   uint8_t* buf = (uint8_t*)malloc(256);
   if (!buf) return false;
   size_t got = fetchText("/api/merit", buf, 255, 3000);
