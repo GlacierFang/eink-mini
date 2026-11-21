@@ -12,15 +12,17 @@
 static InkNet* g_net = nullptr;
 void inkClientBindNet(InkNet* n) { g_net = n; }
 
-size_t InkClient::fetchText(const char* path, uint8_t* dst, size_t dstLen)
+size_t InkClient::fetchText(const char* path, uint8_t* dst, size_t dstLen, uint16_t timeoutMs)
 {
   if (!g_net || !g_net->connected()) return false;
   char url[256];
   g_net->makeUrl(path, url, sizeof(url));
 
   HTTPClient http;
-  http.setTimeout(INK_HTTP_TIMEOUT_MS);
-  http.setConnectTimeout(8000);
+  http.setTimeout(timeoutMs);
+  // 连接超时也不能超过请求超时的一半：连接卡住时阻塞 loop 的时间
+  // 全部算在用户按键的头上。
+  http.setConnectTimeout(timeoutMs > 4000 ? (timeoutMs / 2) : timeoutMs);
   http.setReuse(false);
   if (!http.begin(url)) return false;
   int code = http.GET();
@@ -29,7 +31,7 @@ size_t InkClient::fetchText(const char* path, uint8_t* dst, size_t dstLen)
     WiFiClient* stream = http.getStreamPtr();
     unsigned long t0 = millis();
     unsigned long lastData = t0;
-    while (got < dstLen && millis() - t0 < INK_HTTP_TIMEOUT_MS) {
+    while (got < dstLen && millis() - t0 < timeoutMs) {
       size_t avail = stream->available();
       if (avail == 0) {
         // 服务端可能已发完但保持连接：空闲 500ms 视为传输结束
@@ -74,8 +76,9 @@ bool InkClient::reportDeviceState(const char* pageId, const char* timerState,
            (unsigned long)timerRemain,
            (unsigned long)timerPreset);
   // 响应体不看，只要请求到了就算上报成功。
+  // 超时给 3 秒：这是个小请求，而且它阻塞的是用户的按键响应。
   uint8_t sink[8];
-  return fetchText(path, sink, sizeof(sink)) > 0;
+  return fetchText(path, sink, sizeof(sink), 3000) > 0;
 }
 
 bool InkClient::fetchManifest(InkPageList& out)

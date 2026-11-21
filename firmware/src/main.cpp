@@ -39,8 +39,19 @@ static uint32_t g_lastManifestMs = 0;
 static bool     g_forceRefresh = false;
 // 计时器刚归零 —— 等一次全刷（设备没蜂鸣器，视觉是唯一提醒）。
 static bool     g_timerJustDone = false;
+// 切页：下一次重绘做一次全刷。
+//
+// 切页是整屏内容都变了。局刷只重写脏矩形，窗口外的上一页内容会留在
+// 屏上（翻页钟 -> 位图页尤其明显），差分局刷的残影也会一次次叠上去。
+// 切页是低频事件，全刷一次最划算。
+static bool     g_fullRefresh = false;
 // 设备状态上报节流（当前页 + 计时器）。
 static uint32_t g_lastStateReportMs = 0;
+// 上次按键事件的时间。用户刚按过键时别发网络请求 —— 阻塞会吞掉按键。
+static uint32_t g_lastKeyEventMs = 0;
+// 状态变了，等着上报（延后 2 秒，给用户的手指让路）。
+static bool     g_stateReportDirty = false;
+static uint32_t g_stateReportAtMs = 0;
 // 时钟页按**分钟**重画。
 //
 // 原来按秒重画 —— 但屏上只显示 HH:MM，每秒的画面完全一样。
@@ -195,6 +206,7 @@ static void gotoPage(int idx)
   g_lastClockMin = 0;      // 切回时钟页立刻重画，不等下一分钟
   g_lastTimerSec = 0;
   g_dirtyPage = true;      // 立刻重绘
+  g_fullRefresh = true;    // 切页做一次全刷
 }
 
 static void refreshManifestIfDue()
@@ -236,11 +248,20 @@ static void refreshManifestIfDue()
 //
 // 计时器状态只存在设备 RAM 里，服务端不猜、不假装看得到 ——
 // 控制台要显示真实倒计时，只能靠设备报上来。
+//
+// **绝不在按键处理里发这个请求。** 一次 HTTP 可能阻塞好几秒，阻塞期间
+// loop 不跑，按键不会被采样：轻点被整个吞掉，松开没被采样还会被判成
+// 长按（长按 = reset）—— 倒计时被用户自己的手指重置。
+//
+// 所以：按键处理只置 g_stateReportDirty，真正的请求放到 loop 末尾发，
+// 并且延后 2 秒；周期上报遇到用户刚按过键也让路。
 static void reportDeviceStateIfDue(bool force)
 {
   uint32_t now = millis();
   if (!force) {
     if (g_lastStateReportMs != 0 && (now - g_lastStateReportMs) < INK_STATE_REPORT_PERIOD_MS) return;
+    // 用户刚按过键就让路：这时发请求等于拿手指的响应去换网络往返。
+    if ((uint32_t)(now - g_lastKeyEventMs) < 3000UL) return;
   }
   g_lastStateReportMs = now;
   if (!g_net.connected()) return;
@@ -292,6 +313,7 @@ static void handleKeys()
   InkKeyEvent ev;
   while (g_keys.poll(key, ev)) {
     Serial.printf("[key] %c event=%d\n", (key == INK_KEY_A) ? 'A' : 'B', (int)ev);
+    g_lastKeyEventMs = millis();   // 用户正在操作：别在这时候发网络请求
     if (key == INK_KEY_A) {
       switch (ev) {
         case INK_EV_SHORT:  gotoPage(g_pageIndex + 1); break;   // 短按：下一页
@@ -314,7 +336,8 @@ static void handleKeys()
             g_timer.toggle();          // 开始 / 暂停 / 继续 / DONE 后重开
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
-            reportDeviceStateIfDue(true);
+            g_stateReportDirty = true; // 上报挪到 loop 末尾，别在这里阻塞
+            g_stateReportAtMs = millis() + 2000;
             Serial.printf("[timer] 短按 -> state=%d 剩余 %lus\n",
                           (int)g_timer.state(), (unsigned long)g_timer.remainingSec());
             break;
@@ -322,14 +345,16 @@ static void handleKeys()
             g_timer.cyclePreset();     // 换预设（RUNNING 时忽略）
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
-            reportDeviceStateIfDue(true);
+            g_stateReportDirty = true;
+            g_stateReportAtMs = millis() + 2000;
             Serial.printf("[timer] 双击 -> 预设 %d 分钟\n", g_timer.presetMinutes());
             break;
           case INK_EV_LONG:
             g_timer.reset();            // 重置
             g_lastTimerSec = 0;        // 立刻重画
             g_dirtyPage = true;
-            reportDeviceStateIfDue(true);
+            g_stateReportDirty = true;
+            g_stateReportAtMs = millis() + 2000;
             Serial.println("[timer] 长按 -> 重置");
             break;
           default: break;
@@ -459,6 +484,12 @@ void loop()
   if (g_dirtyPage) {
     g_dirtyPage = false;
     doRender = true;
+    // 切页做一次全刷：整屏内容都变了，局刷只重写脏矩形，
+    // 窗口外的上一页内容会留在屏上。
+    if (g_fullRefresh) {
+      doFull = true;
+      g_fullRefresh = false;
+    }
   }
 
   if (doRender && renderCurrentPage()) {
@@ -470,6 +501,13 @@ void loop()
     renderCurrentPage();
     g_display.push(g_canvas, true);
     Serial.println("[display] 定期全刷");
+  }
+
+  // 状态变了要上报服务端 —— 放在 loop 末尾，且延后 2 秒。
+  // 绝不能在按键处理里发：网络往返的阻塞会把按键吞掉。
+  if (g_stateReportDirty && (int32_t)(millis() - g_stateReportAtMs) >= 0) {
+    g_stateReportDirty = false;
+    reportDeviceStateIfDue(true);
   }
 
   delay(10);

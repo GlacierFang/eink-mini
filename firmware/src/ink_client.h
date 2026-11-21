@@ -19,5 +19,8 @@ public:
   bool reportDeviceState(const char* pageId, const char* timerState,
                          uint32_t timerRemain, uint32_t timerPreset);
   // 返回实际读到的字节数；0 表示失败。
-  size_t fetchText(const char* path, uint8_t* dst, size_t dstLen);
+  // timeoutMs：给「小而不重要」的请求用短超时 ——
+  // 阻塞 loop 的代价与超时成正比（按键会被吞）。
+  size_t fetchText(const char* path, uint8_t* dst, size_t dstLen,
+                   uint16_t timeoutMs = INK_HTTP_TIMEOUT_MS);
 };

@@ -55,11 +55,21 @@ void InkKeys::update(int idx, int pin)
   }
 
   // 长按优先：按下持续超过阈值即判定，屏蔽后续短按
+  //
+  // **必须再看一眼物理引脚**：采样不是连续的 —— loop 里只要有一次阻塞
+  // （网络请求、面板刷新），按键就有一段时间没被采样。这段时间里用户
+  // 松了手，s.down 还是旧的 true，而 now - pressedAt 已经过了阈值，
+  // 于是这一下轻点被判成长按（长按在计时器页是 reset —— 倒计时被
+  // 自己的手指重置）。
+  //
+  // 所以判长按时直接读引脚：引脚已经松开就不判。
   if (s.down && !s.longFired && (now - s.pressedAt) >= INK_KEY_LONG_MS) {
-    s.longFired = true;
-    s.pendingClickAt = 0;
-    s.pendingEvent = INK_EV_LONG;
-    s.pendingKey = (uint8_t)idx;
+    if (digitalRead(PINS[idx]) == 0) {
+      s.longFired = true;
+      s.pendingClickAt = 0;
+      s.pendingEvent = INK_EV_LONG;
+      s.pendingKey = (uint8_t)idx;
+    }
   }
 }
 
